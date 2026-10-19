@@ -1,0 +1,42 @@
+# fpga-showcase
+
+Fernando Cheung 的 FPGA 基带数据通路笔记站。纯静态页面，无构建步骤、无 CDN、无外部字体；直接打开 `index.html` 或部署到 GitHub Pages 即可。
+
+## 页面结构
+
+| 文件 | 内容 |
+|---|---|
+| `index.html` | 文章列表（首页） |
+| `showcase.html` | s01–s04 上板展示：6 张 ILA 截图 + 5 份 CSV 逐点对账（原首页） |
+| `s01.html` | NCO 原理：相位累加器、查表、相位截断、正交本振 + FPGA 实现 |
+| `s02.html` | 复数混频原理：和频/差频、I/Q、CONJ、定点舍入饱和 + FPGA 实现 |
+| `s03.html` | FIR 原理：卷积、窗函数、线性相位、Q1.15 + FPGA 实现 |
+| `s04.html` | 2× 半带插值/抽取：镜像、半带约束、多相分解、抗混叠 + FPGA 实现 |
+
+每篇原理页固定分成「通信原理」和「FPGA 实现」两部分，末尾是验证证据与记忆锚点。
+
+## 目录
+
+```
+assets/site.css          共享样式（深色绿/琥珀，沿用原展示页配色）
+assets/img/*.svg         原理页图表（由真实系数生成）
+assets/data/*.mem        从 fpga-lab 复制的系数表，供图表生成脚本读取
+assets/favicon.svg       favicon
+tools/make_figs.py       图表生成脚本（只依赖 numpy；输出 assets/img/*.svg）
+```
+
+## 重新生成图表
+
+```bash
+python3 tools/make_figs.py
+```
+
+脚本读取 `assets/data/fir_coef.mem`（s03 的 47 抽头）和 `assets/data/hb_odd.mem`
+（s04 的 30 个奇系数），画出系数、幅频、相位、冲激响应、镜像与混叠示意图。
+图表是手写 SVG，不依赖 matplotlib。
+
+## 内容来源
+
+正文数字来自 `fpga-lab` 仓库的 `s01_nco/`–`s04_resample/` 任务书、`docs/进度.md`、
+`docs/学习备忘.md`，以及 2026-10-18/19 的 ILA 截图与 CSV。上板展示页保留原始
+base64 内嵌 PNG，单文件可离线打开。

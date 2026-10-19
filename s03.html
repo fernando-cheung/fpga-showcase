@@ -1,0 +1,359 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="color-scheme" content="dark">
+<meta name="description" content="FIR 低通滤波器：卷积、窗函数法、线性相位、对称预加、Q1.15 定点、四级流水，以及 s03 的 47 抽头 FPGA 实现与上板证据。">
+<meta name="author" content="Fernando Cheung">
+<title>s03 · FIR 低通 — 47 个抽头，一半的乘法器 | FPGA Showcase</title>
+<link rel="icon" href="assets/favicon.svg" type="image/svg+xml">
+<meta name="theme-color" content="#050b0d">
+<link rel="stylesheet" href="assets/site.css">
+</head>
+<body>
+
+<header class="site-head">
+  <div class="wrap">
+    <a class="logo" href="index.html">
+      <span class="logo-mark">FC</span>
+      <span class="logo-text"><b>FPGA SHOWCASE</b><small>BASEBAND DATA PATH</small></span>
+    </a>
+    <nav class="site-nav" aria-label="站点导航">
+      <a href="index.html">文章列表</a><span class="sep"></span>
+      <a href="s01.html">01 NCO</a>
+      <a href="s02.html">02 混频</a>
+      <a class="active" href="s03.html">03 FIR</a>
+      <a href="s04.html">04 重采样</a><span class="sep"></span>
+      <a href="showcase.html">上板波形</a>
+    </nav>
+  </div>
+</header>
+
+<section class="page-hero">
+  <div class="wrap">
+    <div class="crumbs">
+      <a href="index.html">文章列表</a><span class="slash">/</span>
+      <span>s03 · FIR</span><span class="slash">/</span>
+      <span>通信原理 + FPGA 实现</span>
+    </div>
+    <h1>47 个抽头，<br><em>只有一半需要乘法器。</em></h1>
+    <p class="lede">FIR 就是一个滑动窗口：最近 47 个样本各乘一个固定系数，再求和。系数决定它放行什么、压掉什么；系数对称又白送两个好处——线性相位，以及把 47 个乘法器折叠成 24 个。s03 的板上冲激响应和系数表逐点对上，中心 613、两端 1。</p>
+    <div class="meta">
+      <span class="chip"><span class="dot"></span><b>47</b> 抽头 · 奇数</span>
+      <span class="chip">Q1.15 · 系数和 <b>32768</b></span>
+      <span class="chip">群延迟 <b>23</b> 拍 · 流水 <b>4</b> 拍</span>
+      <span class="chip">阻带 <b>55.7 dB</b></span>
+      <span class="chip">实测 <b>21</b> DSP · WNS <b>+10.273 ns</b></span>
+    </div>
+    <div class="hero-rule"></div>
+  </div>
+</section>
+
+<div class="wrap article-layout">
+  <article class="prose article-body">
+
+    <div class="part-head" id="principle">
+      <div class="part-no">01</div>
+      <div>
+        <p class="part-kicker">PART ONE · 通信原理</p>
+        <h2>滤波就是加权滑动平均</h2>
+      </div>
+      <span class="part-tag">THEORY</span>
+    </div>
+
+    <h3 id="conv">卷积：每个输出都是最近 N 个输入的加权和</h3>
+    <p class="lead">FIR 的全部性格都藏在系数 <code>c[0…N−1]</code> 里。给定输入 <code>x[n]</code>，输出是：</p>
+    <div class="eq">
+      <span class="eq-title">N 抽头 FIR</span>
+      y[n] = Σ<sub>k=0</sub><sup>N−1</sup> c[k] · x[n−k]　<span class="dim">（最后再右移 SHIFT 位做增益归一化）</span>
+    </div>
+    <p>换一种说法：把输入打成一个冲激（一个 <code>1</code> 后面全是 <code>0</code>），输出就是系数表本身。所以<strong>冲激响应 = 系数</strong>，这是 FIR 最有用的一条对账关系，也是上板 ILA 能直接验证的东西。</p>
+    <p>在 DUC/DDC 里，FIR 是“筛子”：混频之后频谱里有和频、差频、镜像和杂散，插值/抽取又会再生镜像或造成混叠；FIR 只放行目标频带，把其余的压下去。它承担的是<strong>选带、抗镜像、抗混叠</strong>。本仓库 s05 的计划顺序是“混频 → FIR → 插值”，也有教材把插值放在混频前；具体顺序由系统规划决定，但 FIR 的职责不变。</p>
+
+    <h3 id="window">理想低通是一堵墙，时域是一把 sinc</h3>
+    <p>想要的低通频响是一个矩形：截止频率以内全放行，以外全压掉。它的逆变换是 sinc：</p>
+    <div class="eq">
+      <span class="eq-title">理想低通 · 归一化截止 f<sub>c</sub></span>
+      h[n] = sin(2π f<sub>c</sub> n) / (π n)　<span class="dim">（n = 0 处取极限 2f<sub>c</sub>）</span>
+    </div>
+    <p>问题是 sinc <strong>无限长、两侧衰减慢</strong>，造不出来。直接截断到 47 点，频域会出现剧烈的吉布斯纹波：阻带第一旁瓣只有约 <strong>−13 dB</strong>，“该压的没压住”。</p>
+    <p>解决办法是给 sinc 乘一个两头平滑衰减到 0 的窗，让边缘温柔收尾。本设计用 <strong>Hamming 窗</strong>：</p>
+    <div class="eq">
+      <span class="eq-title">Hamming 窗</span>
+      w[n] = 0.54 − 0.46 · cos( 2πn / (N−1) )　<span class="dim">n = 0…N−1</span><br>
+      c[n] = 理想 sinc[n] · w[n] → 归一化 → Q1.15 量化
+    </div>
+    <p>Hamming 把第一旁瓣压到约 <strong>−43 dB</strong>，整体阻带约 <strong>−53 dB</strong>。代价是过渡带变宽：同样抽头数下，它不如等波纹（Parks-McClellan）陡。本设计选窗函数法，是因为它<strong>无迭代、无优化器，每个数字能手算核对</strong>——对一个“要讲得清、验得明”的重建项目，这是对的取舍。</p>
+
+    <div class="table-wrap">
+      <table class="data">
+        <thead><tr><th>设计项</th><th>取值</th><th>说明</th></tr></thead>
+        <tbody>
+          <tr><td>抽头数 N</td><td><b>47</b></td><td>奇数 → 群延迟 <code>(N−1)/2 = 23</code>，整数拍，测试好对账</td></tr>
+          <tr><td>归一化截止</td><td><b>0.15</b></td><td>Fs = 50 MHz 时是 7.5 MHz</td></tr>
+          <tr><td>窗</td><td>Hamming</td><td>旁瓣低，过渡带较宽</td></tr>
+          <tr><td>系数格式</td><td>Q1.15，16 位补码</td><td>系数和精确 <b>32768 = 2<sup>15</sup></b></td></tr>
+          <tr><td>通带 [0, 0.10] 纹波</td><td><b>0.037 dB</b></td><td>通带几乎平</td></tr>
+          <tr><td>阻带 [0.20, 0.5] 衰减</td><td><b>55.7 dB</b></td><td>Hamming 窗的典型水平</td></tr>
+          <tr><td>最大 / 最小系数</td><td><b>+9810 / −1867</b></td><td>中心最高，两端只有 11</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <figure class="figure">
+      <div class="canvas">
+        <img src="assets/img/s03-coef.svg" alt="47 个 FIR 系数，关于中心对称" loading="lazy">
+      </div>
+      <figcaption><span class="fig-label">图 1</span>47 个 Q1.15 系数：中心 <b>9810</b>，最小 <b>−1867</b>，两端只有 <b>11</b>。<code>c[k] = c[46−k]</code> 严格成立，这是线性相位的来源，也是“预加”优化的前提。</figcaption>
+    </figure>
+
+    <h3 id="linear">对称 = 线性相位 = 所有频率一起延迟</h3>
+    <p>系数左右镜像对称时，频率响应可以写成：</p>
+    <div class="eq">
+      <span class="eq-title">线性相位</span>
+      H(f) = e<sup>−j2πf·23</sup> · A(f)　<span class="dim">A(f) 是实数幅度，不含相位扭曲</span><br>
+      φ(f) = −2π·23·f　→　群延迟 τ = −(1/2π)·dφ/df = <b>23</b>
+    </div>
+    <p>相位是频率的直线，斜率对应 23 个采样的延迟。所有频率成分一起延迟 23 拍，波形形状不变，只是整体后移——这叫<strong>线性相位</strong>。IIR 或非对称 FIR 会让不同频率延迟不同，波形被“滤歪”。</p>
+
+    <figure class="figure">
+      <div class="canvas">
+        <img src="assets/img/s03-phase.svg" alt="线性相位：相位随频率线性下降，斜率对应 23 拍群延迟" loading="lazy">
+      </div>
+      <figcaption><span class="fig-label">图 2</span>通带内相位是一条过原点的直线，斜率恒定，所以群延迟恒为 <b>23</b> 拍。这条直线和“系数对称”是同一件事的频域说法。</figcaption>
+    </figure>
+
+    <div class="callout warn">
+      <span class="tag">两个延迟别混</span>
+      <p><strong>流水线延迟 4 拍</strong>是寄存器造成的；<strong>群延迟 23 拍</strong>是系数对称造成的相位延迟。冲激打进去：第 4 拍先冒 <code>h[0]=1</code>，第 <code>4+23=27</code> 拍才到中心峰 613。TASK 里“第 4 拍出现 h[0]、中心 613”就是这两件事叠在一起，不是矛盾。</p>
+    </div>
+
+    <h3 id="response">通带、阻带与过渡带</h3>
+    <p>用板上真实系数做 FFT，可以看到 Hamming 窗的典型形状：通带很平（0.037 dB 纹波），过渡带从 0.10 到 0.20，阻带在 −55 dB 以下。用 Q1.15 整数系数重算，阻带最大值约 <strong>−55.9 dB</strong>；TASK 里的 55.7 dB 是浮点设计指标，差 0.2 dB 来自量化，属于正常。</p>
+
+    <figure class="figure">
+      <div class="canvas">
+        <img src="assets/img/s03-response.svg" alt="47 抽头 FIR 的幅频响应，阻带约 -55.9 dB" loading="lazy">
+      </div>
+      <figcaption><span class="fig-label">图 3</span>47 抽头、Hamming 窗、归一化截止 0.15 的幅频响应。过渡带 0.10–0.20，阻带约 <b>−55.9 dB</b>。这不是“理想砖墙”，而是 47 个抽头能买到的现实。</figcaption>
+    </figure>
+
+    <h3 id="fir-vs-iir">为什么是 FIR，不是 IIR</h3>
+    <ul>
+      <li><strong>严格线性相位</strong>：系数对称即可，波形不被滤歪；IIR 的相位是非线性的，通常要靠全通均衡器补偿。</li>
+      <li><strong>无反馈、永远稳定</strong>：IIR 有极点，量化和舍入可能让它不稳定；FIR 只有零点。</li>
+      <li><strong>对称 → 乘法器省一半</strong>：47 个抽头折叠成 24 个乘法器，正好对上 Artix-7 的 DSP48。</li>
+      <li><strong>代价</strong>：要很多抽头才够陡。FIR 用“长度”换“陡度”，IIR 用“反馈”换“陡度”。</li>
+    </ul>
+
+    <div class="part-head" id="impl">
+      <div class="part-no">02</div>
+      <div>
+        <p class="part-kicker">PART TWO · FPGA 实现</p>
+        <h2>先加后乘，再分四级流水</h2>
+      </div>
+      <span class="part-tag">RTL</span>
+    </div>
+
+    <h3 id="symmetry">对称预加：47 个乘法器怎么变成 24 个</h3>
+    <p>直接型要 47 个乘法器。利用 <code>c[k] = c[N−1−k]</code>，把成对的输入先加起来再乘：</p>
+    <div class="eq">
+      <span class="eq-title">对称折叠</span>
+      y[n] = Σ<sub>i=0</sub><sup>22</sup> c[i] · ( x[n−i] + x[n−(46−i)] )　+　c[23] · x[n−23]
+    </div>
+    <p>23 对 + 1 个中心抽头 = <strong>24 个乘法器</strong>。加法器比乘法器便宜得多，而 Artix-7 的 DSP48 内部本来就有 pre-adder，通常一个 DSP 就能干“一对预加 + 一次乘”。</p>
+    <div class="flow">
+      <div class="flow-node"><span class="n">IN</span><b>输入寄存</b><small>x_r / dly[46]</small></div>
+      <div class="flow-arrow">→</div>
+      <div class="flow-node"><span class="n">PAIR</span><b>对称预加</b><small>23 对 + 中心</small></div>
+      <div class="flow-arrow">→</div>
+      <div class="flow-node"><span class="n">×24</span><b>乘系数</b><small>13 × 16 → 29 位</small></div>
+      <div class="flow-arrow">→</div>
+      <div class="flow-node"><span class="n">TREE</span><b>4 组加法树</b><small>组内 3 层</small></div>
+      <div class="flow-arrow">→</div>
+      <div class="flow-node alt"><span class="n">OUT</span><b>舍入 / 饱和</b><small>13 位 · 晚 4 拍</small></div>
+    </div>
+
+    <h3 id="width">位宽：每一级都留够，最后才截</h3>
+    <div class="table-wrap">
+      <table class="data">
+        <thead><tr><th>量</th><th>位宽</th><th>怎么来的</th></tr></thead>
+        <tbody>
+          <tr><td>预加和 <code>PA_W</code></td><td><b>13</b></td><td>两个 12 位有符号数相加，可能到 13 位</td></tr>
+          <tr><td>单个乘积 <code>PROD_W</code></td><td><b>29</b></td><td>13 位 × 16 位全精度</td></tr>
+          <tr><td>乘积和 <code>SUM_W</code></td><td><b>35</b></td><td><code>PROD_W + ceil(log2 24) + 1 = 29 + 5 + 1</code></td></tr>
+          <tr><td>最终和 <code>FINAL_W</code></td><td><b>36</b></td><td>加半个 LSB 可能把最大正值顶出 <code>SUM_W</code></td></tr>
+          <tr><td>输出 <code>OW</code></td><td><b>13</b></td><td>单位增益理论上 12 位够，多 1 位留余量</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p>原则是<strong>中间全精度、最后才截</strong>。提前截中间结果省不下 DSP，只会白丢精度，还让“哪一位代表什么”变难查。输出 <code>OW = IW+1</code> 是保守选择：系数和 = 32768 时满幅 ±2048 理论上正好输出 ±2048，12 位就够；多 1 位是为了换增益系数时不用改接口，也避免舍入在边界上多 1 LSB 就溢出。</p>
+
+    <h3 id="pipeline">四级流水：每级只做一点</h3>
+    <div class="table-wrap">
+      <table class="data">
+        <thead><tr><th>级</th><th>做什么</th><th>位宽</th></tr></thead>
+        <tbody>
+          <tr><td>1</td><td>输入寄存 + 采样延迟线 <code>x_r / dly[]</code></td><td>12</td></tr>
+          <tr><td>2</td><td>对称预加 + 乘法 → <code>p_reg[]</code></td><td>29</td></tr>
+          <tr><td>3</td><td>4 组部分和 → <code>gsum[]</code>（每组最多 6 个乘积）</td><td>35</td></tr>
+          <tr><td>4</td><td>4 组相加 + 舍入 + 右移 + 饱和 → <code>y_out</code></td><td>13</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p>为什么加法树要分组：24 个 29 位乘积如果在一个周期里做 5 层加法，50 MHz 也许能过，但余量会被吃掉。分成“组内 3 层 + 组间 2 层”后，每级只有 3 层左右加法，时序余量大得多。代价是延迟 4 拍，FIR 在数据通路里，这完全可以接受。</p>
+
+    <figure class="figure">
+      <div class="canvas">
+        <img src="assets/img/s03-impulse.svg" alt="冲激响应：第 4 拍出现首抽头，第 27 拍到达中心峰" loading="lazy">
+      </div>
+      <figcaption><span class="fig-label">图 4</span>冲激在 <code>n=0</code> 输入：第 <b>4</b> 拍出现 <code>h[0]=1</code>，第 <b>27</b> 拍到达中心峰 <b>613</b>。4 是流水线延迟，23 是群延迟，两者叠加。</figcaption>
+    </figure>
+
+    <h3 id="q15">系数进 FPGA：Q1.15 与“和必须是 32768”</h3>
+    <p>FPGA 里不做浮点。系数在 PC 上算好、量化成 Q1.15 整数、写进 <code>.mem</code>，板上只做整数乘加。Q1.15 的意思是“1 个符号位 + 15 个小数位”：</p>
+    <div class="eq">
+      <span class="eq-title">Q1.15</span>
+      真实值 = 整数 / 2<sup>15</sup>　→　1.0 ↔ 32768，0.5 ↔ 16384，9810 ↔ 0.2994
+    </div>
+    <p>单个系数最大只能到 <code>+32767</code>，因为 16 位有符号上限就是 32767；1.0 本身存不进一个系数。但“和 = 32768”是 <strong>47 个系数的算术求和</strong>，存在 35 位累加器里，不需要塞进 16 位。想通这点，就不会被“32768 怎么存得下”卡住。</p>
+    <p>让和精确等于 32768，是为了让低通的<strong>直流增益精确等于 1</strong>：</p>
+    <div class="eq">
+      <span class="eq-title">直流增益</span>
+      y = ( Σ c<sub>int</sub>[k] · x ) &gt;&gt;&gt; 15 = x · (Σ c<sub>int</sub>) / 2<sup>15</sup><br>
+      要求 y = x　⟺　Σ c<sub>int</sub> = 2<sup>15</sup> = <b>32768</b>
+    </div>
+    <p>如果和是 32767，直流增益变成 32767/32768，截断时会少 1 LSB，测试就无法写成严格相等。和 = 32768 时 <code>&gt;&gt;&gt; 15</code> 是精确除法，直流逐位不变，和舍入模式无关。</p>
+    <p>量化后 <code>Σc_int</code> 未必恰好 32768，差几个 LSB 怎么办？<strong>全部塞给中心抽头</strong>：</p>
+    <div class="code">
+      <div class="code-head"><b>scripts/gen_fir_coef.py</b><span>残差补偿不破坏对称性</span></div>
+<pre>c_int[中心] += 32768 - sum(c_int)
+
+<span class="c">// 奇数抽头只有中心是“单身”，动它不破坏 c[k] = c[N-1-k]</span>
+<span class="c">// 动任何成对抽头都会破坏对称性，线性相位就没了</span></pre>
+    </div>
+
+    <h3 id="mem">`.mem` + `$readmemh`：仿真和综合读同一份</h3>
+    <p>系数文件是纯文本，一行一个十六进制补码数：<code>coef.mem</code> 47 行。RTL 里：</p>
+    <div class="code">
+      <div class="code-head"><b>rtl/fir.v</b><span>系数表加载</span></div>
+<pre><span class="k">reg signed</span> [CW-1:0] coef [0:N-1];
+<span class="k">initial</span> $readmemh({`FIR_COEFDIR, COEF_FILE}, coef);</pre>
+    </div>
+    <p><code>FIR_COEFDIR</code> 必须带双引号、结尾带斜杠（例如 <code>"D:/proj/s03_fir/lut/"</code>），并且改完目录后要 <strong>Reset Synthesis</strong>——Vivado 会缓存综合结果，不 reset 还用旧路径。这个宏和 s01 的 <code>NCO_LUTDIR</code> 是两个独立的宏，因为两张表在两个目录里。</p>
+
+    <h3 id="round">舍入与饱和：`floor` 才是 RTL 的真实行为</h3>
+    <p><code>ROUND=1</code> 的实现是“加 <code>2<sup>14</sup></code>，再算术右移 15 位”。算术右移对负数是向 <code>−∞</code> 取整，所以严格说它叫 <strong>round-half-up on the shifted value / floor toward −∞</strong>，在正半边看起来像四舍五入，在负半边的 <code>.5</code> 点上和“远离零舍入”差 1。</p>
+    <p>对账表 <code>expected_h.md</code> 因此用 <code>floor((coef·2047 + 2<sup>14</sup>)/2<sup>15</sup>)</code> 算，才和 RTL 一位不差。写测试时如果按“四舍五入”直觉写 <code>round()</code>，负数 tie 点会对不上，然后你会怀疑 RTL——其实 RTL 没错，是期望值写错了。</p>
+    <p>加半个 LSB 可能让最大正值越过 <code>SUM_W</code>，所以先加宽 1 位再饱和到 <code>OW</code>。饱和逻辑用 <code>tb_fir.v</code> 里 <code>OW=8</code> 的实例单独验，不靠主配置去撞边界。</p>
+
+    <h3 id="evidence">验证：冲激响应就是系数表</h3>
+    <div class="table-wrap">
+      <table class="data">
+        <thead><tr><th>层</th><th>手段</th><th>结果</th></tr></thead>
+        <tbody>
+          <tr><td>冲激响应</td><td>47 个抽头逐个和 <code>round(2047·c[k]/2<sup>15</sup>)</code> 比对</td><td>中心 <b>613</b>、两端 <b>1</b>、关于 k=23 对称</td></tr>
+          <tr><td>直流增益</td><td>±1000、+2047、−2048 的稳态输出</td><td>逐位恢复</td></tr>
+          <tr><td>参考向量</td><td>4 场景 × 512 样本（impulse / step / tones / random）</td><td>逐位一致</td></tr>
+          <tr><td>舍入 / 饱和</td><td>5 抽头 tie、<code>OW=8</code> 实例</td><td>ROUND 可区分；+127/−128 正确</td></tr>
+          <tr><td>参数化</td><td>N=5/47、OW=8/13、IW=8/12</td><td>都测到</td></tr>
+          <tr><td>反向验证</td><td>改系数下标 / 关舍入 / 饱和改回绕 / 中心抽头错位</td><td>分别 <b>12 / 10 / 2 / 11</b> 条 FAIL</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p>四个 TB 共 <strong>81 个检查点</strong>：<code>tb_fir</code> 35、<code>tb_fir_coef</code> 15、<code>tb_fir_top</code> 21、<code>tb_table_binding</code> 10。F3（饱和改回绕）只变红 2 条，正好说明“主配置之外还要一个 <code>OW=8</code> 实例”：主配置离饱和边界很远，饱和逻辑改坏了它一点感觉都没有。</p>
+
+    <h3 id="board">上板：8 个冲激，逐点对账</h3>
+    <p>板级顶层 <code>fir_top.v</code> 每 1024 拍发一个单点冲激（幅度 2047），FIR 输出就是冲激响应，ILA 上直接和系数表对账：</p>
+    <div class="table-wrap">
+      <table class="data">
+        <thead><tr><th>项</th><th>实测</th></tr></thead>
+        <tbody>
+          <tr><td>窗口</td><td>8192 点；冲激周期 <b>1024</b> 点 = 20.48 µs</td></tr>
+          <tr><td>冲激数量</td><td><b>8</b> 个完整冲激</td></tr>
+          <tr><td>响应</td><td>47 点；中心 <b>613</b>、两端 <b>1</b>、关于第 23 点对称</td></tr>
+          <tr><td>资源（纯设计）</td><td><b>942 LUT / 1400 Reg / 0 BRAM / 21 DSP</b></td></tr>
+          <tr><td>含 ILA</td><td>1913 LUT / 3242 Reg / 3.5 BRAM；WNS <b>+10.273 ns</b></td></tr>
+          <tr><td>CSV 对账</td><td><b>8 / 8</b> 组与 <code>expected_h.md</code> 逐点一致，<b>0 LSB</b></td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p>DSP 是 <strong>21</strong> 不是结构上的 24：<code>coef[3]</code> / <code>coef[13]</code> 量化后为 0，两个乘法器被综合删掉；差的那 1 个原因还没坐实（可能是小常数乘走了移位加法）。不影响功能——判据是波形，不是资源数。</p>
+    <div class="callout blue">
+      <span class="tag">对照上板波形</span>
+      <p>ILA 截图与逐点表在 <a href="showcase.html#s03">上板展示 · s03 FIR</a>。重点看中心 613、两端 1，以及 8 个冲激的间距是否都是 1024 点。</p>
+    </div>
+
+    <h3 id="pitfalls">这轮留下的三个提醒</h3>
+    <ul>
+      <li><strong>486 条 DPOR-1</strong>：<code>p_reg</code> 用异步复位，而 DSP 内部寄存器只认同步复位，乘积寄存器只能在外面另起一排。不影响功能，50 MHz 下有余量，暂不改。</li>
+      <li><strong>系数设计只是第一版</strong>：Hamming、0.037 dB 通带纹波、55.7 dB 阻带。板级已对上，暂不改；要更陡就加抽头或换等波纹，但改系数必须同步重跑 <code>make fir-coef</code> 和 <code>make fir-vec</code>。</li>
+      <li><strong>位宽衔接</strong>：s02 的 mixer 输出 13 位，FIR 默认 <code>IW=12</code>。s05 集成时要么把 FIR 例化成 <code>IW=13</code>，要么在 mixer 后做增益/位宽规划——这就是“整条链路的增益预算”。</li>
+    </ul>
+
+    <div class="takeaways" id="takeaways">
+      <h3>如果只记三件事</h3>
+      <ol>
+        <li><b>FIR = 卷积；冲激响应 = 系数表。</b>峰值出现的位置是群延迟，首抽头出现的位置是流水线延迟，两者不是一回事。</li>
+        <li><b>系数对称 → 线性相位 + 乘法器减半。</b>47 个抽头折叠成 24 个乘法器；实测 21 个 DSP 是因为有两个系数量化后为 0。</li>
+        <li><b>系数和 = 2<sup>15</sup> 让直流增益精确为 1</b>，<code>&gt;&gt;&gt;15</code> 成为精确除法；量化残差塞给中心抽头，不破坏对称性。</li>
+      </ol>
+    </div>
+
+    <nav class="pager" aria-label="上一篇 / 下一篇">
+      <a href="s02.html"><span class="dir">← 上一篇</span><span class="ttl">s02 · 复数混频：把频率搬到和、差上</span></a>
+      <a class="next" href="s04.html"><span class="dir">下一篇 →</span><span class="ttl">s04 · 半带重采样：61 抽头，15 个乘法器</span></a>
+    </nav>
+  </article>
+
+  <aside class="toc" aria-label="本页目录">
+    <p class="toc-title">本页目录</p>
+    <ol>
+      <li><a href="#principle">01 · 通信原理</a></li>
+      <li><a href="#conv">卷积与冲激响应</a></li>
+      <li><a href="#window">窗函数法</a></li>
+      <li><a href="#linear">线性相位</a></li>
+      <li><a href="#response">通带与阻带</a></li>
+      <li><a href="#fir-vs-iir">FIR vs IIR</a></li>
+      <li><a href="#impl">02 · FPGA 实现</a></li>
+      <li><a href="#symmetry">对称预加</a></li>
+      <li><a href="#width">位宽预算</a></li>
+      <li><a href="#pipeline">四级流水</a></li>
+      <li><a href="#q15">Q1.15 与 32768</a></li>
+      <li><a href="#mem">系数进 FPGA</a></li>
+      <li><a href="#round">舍入与饱和</a></li>
+      <li><a href="#evidence">验证证据</a></li>
+      <li><a href="#board">上板实测</a></li>
+      <li><a href="#takeaways">记忆锚点</a></li>
+    </ol>
+    <div class="toc-foot">
+      <a href="showcase.html#s03">→ 看 s03 上板波形</a>
+      <a href="s02.html">← 上一篇：s02 混频</a>
+      <a href="s04.html">→ 下一篇：s04 重采样</a>
+    </div>
+  </aside>
+</div>
+
+<footer class="site-foot">
+  <div class="wrap">
+    <div class="foot-id">
+      <span class="foot-mark">FC</span>
+      <div>
+        <p><b>Fernando Cheung</b> · FPGA / 基带数据通路</p>
+        <p>个人技术笔记 · 教学演示与技术分享</p>
+      </div>
+    </div>
+    <div>
+      <p>数据来源：<code>fpga-lab</code> 的 <code>s03_fir/</code>、<code>logs/s03_fir/</code>、<code>docs/学习备忘.md</code> 第 12 节。</p>
+      <div class="foot-links">
+        <a href="index.html">文章列表</a>
+        <a href="showcase.html">上板波形</a>
+        <a href="s04.html">下一篇 s04</a>
+      </div>
+    </div>
+  </div>
+</footer>
+
+</body>
+</html>

@@ -1,0 +1,349 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="color-scheme" content="dark">
+<meta name="description" content="2× 半带插值/抽取：零插值与镜像、半带约束、多相分解、偶相直通、抗混叠、两个 SHIFT，以及 s04 的 15 乘法器 FPGA 实现与上板证据。">
+<meta name="author" content="Fernando Cheung">
+<title>s04 · 半带重采样 — 61 抽头，15 个乘法器 | FPGA Showcase</title>
+<link rel="icon" href="assets/favicon.svg" type="image/svg+xml">
+<meta name="theme-color" content="#050b0d">
+<link rel="stylesheet" href="assets/site.css">
+</head>
+<body>
+
+<header class="site-head">
+  <div class="wrap">
+    <a class="logo" href="index.html">
+      <span class="logo-mark">FC</span>
+      <span class="logo-text"><b>FPGA SHOWCASE</b><small>BASEBAND DATA PATH</small></span>
+    </a>
+    <nav class="site-nav" aria-label="站点导航">
+      <a href="index.html">文章列表</a><span class="sep"></span>
+      <a href="s01.html">01 NCO</a>
+      <a href="s02.html">02 混频</a>
+      <a href="s03.html">03 FIR</a>
+      <a class="active" href="s04.html">04 重采样</a><span class="sep"></span>
+      <a href="showcase.html">上板波形</a>
+    </nav>
+  </div>
+</header>
+
+<section class="page-hero">
+  <div class="wrap">
+    <div class="crumbs">
+      <a href="index.html">文章列表</a><span class="slash">/</span>
+      <span>s04 · Resampler</span><span class="slash">/</span>
+      <span>通信原理 + FPGA 实现</span>
+    </div>
+    <h1>61 个抽头，<br><em>15 个乘法器就够了。</em></h1>
+    <p class="lede">2× 插值不是“把点变密”，而是先塞零、再低通；2× 抽取不是“隔点扔”，而是先低通、再扔。半带滤波器让一半的抽头恒为零，多相分解又让其中一整相退化成纯延迟——61 个抽头的 FIR，最后只花 15 个乘法器。</p>
+    <div class="meta">
+      <span class="chip"><span class="dot"></span><b>61</b> = 4×15 + 1 抽头</span>
+      <span class="chip"><b>31</b> 个非零 · <b>15</b> 个乘法器</span>
+      <span class="chip">插值 SHIFT <b>14</b> · 抽取 <b>15</b></span>
+      <span class="chip">阻带 <b>53.1 dB</b> · Fs/4 = <b>−6 dB</b></span>
+      <span class="chip">实测 <b>30</b> DSP · WNS <b>9.311 ns</b></span>
+    </div>
+    <div class="hero-rule"></div>
+  </div>
+</section>
+
+<div class="wrap article-layout">
+  <article class="prose article-body">
+
+    <div class="part-head" id="principle">
+      <div class="part-no">01</div>
+      <div>
+        <p class="part-kicker">PART ONE · 通信原理</p>
+        <h2>换采样率，先问镜像和混叠</h2>
+      </div>
+      <span class="part-tag">THEORY</span>
+    </div>
+
+    <h3 id="why">为什么需要重采样</h3>
+    <p class="lead">DUC 要把符号率抬到 DAC 的采样率，DDC 要把 ADC 的采样率降到基带处理能接受的程度。升采样叫<strong>插值</strong>，降采样叫<strong>抽取</strong>。两者都不是“改一下时钟”那么简单：采样率一变，频谱就会复制或折叠，必须先处理。</p>
+    <ul>
+      <li><strong>插值</strong>：在样本之间补零，频谱以原采样率为周期复制，多出<strong>镜像</strong>；必须低通把镜像压掉。</li>
+      <li><strong>抽取</strong>：降低采样率，Nyquist 变低；高于新 Nyquist 的分量会<strong>折叠</strong>到带内，且不可逆；必须先低通。</li>
+    </ul>
+    <p>顺序铁律：<strong>插值 = 先插零后滤；抽取 = 先滤后抽。</strong>反了就会把镜像或混叠留在信号里。</p>
+
+    <h3 id="interp">插值：塞零不是“变密”，是“腾位置”</h3>
+    <p>2× 零插值就是在每两个原始样点之间塞一个 0：</p>
+    <div class="eq">
+      <span class="eq-title">2× 零插值</span>
+      u[2n] = x[n]　　u[2n+1] = 0
+    </div>
+    <p>信息量没有变，只是给后续滤波留出了“插值的位置”。频域上，原谱占 <code>[0, B]</code>，零插值后整个频谱以 <code>Fs</code> 为周期复制，在 <code>Fs−B</code> 处出现一份一模一样的镜像。</p>
+    <p>要滤掉镜像：低通阻带起点必须 <code>≤ Fs−B</code>，通带终点必须 <code>≥ B</code>。两者之间就是过渡带，宽度 <code>Fs − 2B</code>。<strong>B 越接近 Fs/2，过渡带越窄，滤波器越难做；B 越小，滤波器越轻松。</strong></p>
+
+    <figure class="figure">
+      <div class="canvas">
+        <img src="assets/img/s04-images.svg" alt="零插值前后的频谱：原谱与 Fs-B 处的镜像" loading="lazy">
+      </div>
+      <figcaption><span class="fig-label">图 1</span>零插值后，基带谱在 <b>Fs</b> 两侧各复制一份。镜像落在 <b>Fs−B</b> 附近；通带终点 B 与阻带起点 Fs−B 之间就是过渡带，宽度 <b>Fs−2B</b>。</figcaption>
+    </figure>
+
+    <h3 id="halfband">什么叫“半带”：三条约束推出三件事</h3>
+    <p>半带（halfband）不是“截止频率随便取一半”，而是三条硬约束：</p>
+    <ol>
+      <li><strong>中心抽头 <code>h[M] = 0.5</code></strong>——名字里的“半”就来自这里。</li>
+      <li><strong>中心以外所有偶数偏移位置系数为 0</strong>——一半的抽头根本不干活。</li>
+      <li><strong>通带与阻带关于 <code>Fs/4</code> 镜像对称</strong>（幅度互补，<code>δ<sub>p</sub> = δ<sub>s</sub></code>），即通带边缘 + 阻带起点 = <code>Fs/2</code>。</li>
+    </ol>
+    <p>第三条带来两个后果：</p>
+    <ul>
+      <li>过渡带被固定在 <code>Fs/4</code> 附近；以高速率 <code>Fs</code> 归一化，最优的通带边在 <code>0.20</code>、阻带起点在 <code>0.30</code>，关于 <code>0.25 = Fs/4</code> 对称。</li>
+      <li><code>Fs/4</code> 处幅度恰好为 <code>0.5</code>（<strong>−6 dB</strong>）。这是半带的“身份证”，可以在仿真或 ILA 里直接验证。</li>
+    </ul>
+    <p>线性相位要求 <code>N</code> 为奇数（<code>N = 2M+1</code>）；“偶数偏移为 0”又要求 <code>M</code> 为偶数（<code>M = 2q</code>）。两者合成：</p>
+    <div class="eq">
+      <span class="eq-title">半带抽头数</span>
+      N = 4q + 1　→　本设计 61 = 4×15 + 1，M = 30
+    </div>
+    <p>群延迟是 <strong>30 个高速率样点 = 15 个低速率样点</strong>。插值偶相 <code>y_e = x[n−15]</code> 里的 15，就是从这里来的。</p>
+
+    <figure class="figure">
+      <div class="canvas">
+        <img src="assets/img/s04-halfband.svg" alt="61 抽头半带滤波器的幅频响应，Fs/4 处为 -6 dB" loading="lazy">
+      </div>
+      <figcaption><span class="fig-label">图 2</span>61 抽头半带：通带 [0, 0.20]、阻带 [0.30, 0.5]，阻带约 <b>−53.1 dB</b>；<b>Fs/4 = 0.25</b> 处幅度恰为 0.5（−6 dB）。通带与阻带关于 Fs/4 镜像对称。</figcaption>
+    </figure>
+
+    <h3 id="polyphase">多相分解：偶相为什么能直通</h3>
+    <p>把 <code>H(z)</code> 按 2 相拆开：</p>
+    <div class="eq">
+      <span class="eq-title">两相分解</span>
+      H(z) = E(z²) + z<sup>−1</sup>·O(z²)<br>
+      E(z) ← 偶系数 h[0], h[2], h[4]…　　O(z) ← 奇系数 h[1], h[3], h[5]…
+    </div>
+    <p>由半带约束二，偶相只剩中心一项，位置在相内序号 <code>M/2 = 15</code>：</p>
+    <div class="eq">
+      <span class="eq-title">偶相退化成纯延迟</span>
+      E(z) = 0.5 · z<sup>−15</sup><br>
+      y[2n] = E(z)·x[n] = 0.5·x[n−15]　→　补 ×2 后 = <b>x[n−15]</b>
+    </div>
+    <p>这不是近似，也不是凑巧，是<strong>精确成立的等式</strong>。偶相不需要任何乘法器，只需要一条深度 15 的延迟线。奇相才是真正的卷积：</p>
+    <div class="eq">
+      <span class="eq-title">奇相 · 15 个乘法器</span>
+      y[2n+1] = Σ<sub>i=0</sub><sup>14</sup> o[i] · x[n−i]　<span class="dim">（30 个奇系数对称预加 → 15 对）</span>
+    </div>
+    <p>注意 <code>z<sup>−1</sup></code> 在 <code>O(z²)</code> 前面：<strong>奇相相对偶相天然晚 1 拍</strong>。抽取公式里的 <code>x_o[n−1−i]</code> 那个 <code>−1</code> 就是从这里来的，不是笔误。</p>
+
+    <div class="callout key">
+      <span class="tag">一句话</span>
+      <p><strong>“偶相直通”是 <code>E(z)</code> 只剩一个非零系数的结果。</strong>面试被问“偶相为什么可以直通”，答案不是“因为对称”，而是“因为半带约束让偶相除了中心 0.5 以外全为 0”。</p>
+    </div>
+
+    <h3 id="decim">抽取：不滤波会发生什么</h3>
+    <p>抽取是插值的逆过程：先低通，再隔点取一个。如果跳过滤波直接 2:1 抽取，高于新 Nyquist 的分量会折叠到带内，而且<strong>不可逆</strong>。</p>
+    <p>一个直观例子：采样率 100 Hz，有用信号 10 Hz，带外干扰 40 Hz。直接 2:1 抽取后速率 50 Hz，Nyquist 变成 25 Hz；40 Hz 超出 Nyquist，折叠到 <code>|40 − 50| = 10 Hz</code>，正好压在有用信号上，同频、无法分离。</p>
+
+    <figure class="figure">
+      <div class="canvas">
+        <img src="assets/img/s04-alias.svg" alt="2:1 抽取不滤波时 40 Hz 干扰折叠到 10 Hz" loading="lazy">
+      </div>
+      <figcaption><span class="fig-label">图 3</span>抽取前不滤波：40 Hz 干扰在 2:1 抽取后折叠到 <b>10 Hz</b>，与有用信号同频。半带先在 40 Hz 处压掉约 53 dB，再抽取，10 Hz 处才干净。</figcaption>
+    </figure>
+
+    <h3 id="shift">两个 SHIFT 差的那一位，就是插值的 ×2</h3>
+    <p>零插值后每两点有一个 0，信号平均功率掉一半，所以插值滤波器必须补 <code>×2</code> 的增益。系数表按 Q1.15 设计（和 = 32768 = 1.0），×2 不用改表，改移位：</p>
+    <div class="eq">
+      <span class="eq-title">一张表，两个 SHIFT</span>
+      插值：2·S / 2<sup>15</sup> = S / 2<sup>14</sup>　→　SHIFT = CW − 2 = <b>14</b><br>
+      抽取：S / 2<sup>15</sup>　→　SHIFT = CW − 1 = <b>15</b>
+    </div>
+    <p>抽取的输入是真实的、满采样的数据，没有“一半是零”造成的功率损失，所以不需要这个 ×2。用一张表、两个 SHIFT，比“生成两张表（一张是另一张的 2 倍）”更好：只有一份真值，而且差的那一位正好把“为什么插值要补 2 倍”摆在代码里。</p>
+
+    <div class="part-head" id="impl">
+      <div class="part-no">02</div>
+      <div>
+        <p class="part-kicker">PART TWO · FPGA 实现</p>
+        <h2>两个模块，一张系数表</h2>
+      </div>
+      <span class="part-tag">RTL</span>
+    </div>
+
+    <h3 id="arch">接口：相位并行，不带 valid</h3>
+    <div class="flow">
+      <div class="flow-node"><span class="n">IN</span><b>x_in</b><small>低速 · Fs</small></div>
+      <div class="flow-arrow">→</div>
+      <div class="flow-node"><span class="n">INTERP</span><b>2× 插值</b><small>偶相直通 + 奇相 15 乘</small></div>
+      <div class="flow-arrow">→</div>
+      <div class="flow-node alt"><span class="n">OUT</span><b>y_e / y_o</b><small>两相并行 · 2Fs</small></div>
+      <div class="flow-note">抽取方向反过来：<b>x_e / x_o</b> 两相输入 → 15 乘 + 0.5 直通 → <b>y_out</b>。一路时钟，换采样率发生在数据里，不发生在时钟里。</div>
+    </div>
+    <p>好处是不跨时钟域、TB 可以逐拍比对、参考模型最干净。代价是接真实的 1 路 DAC/ADC 时，s05 还要补一级 <strong>2:1 并串 / 1:2 串并</strong>；只把 DAC 时钟提到 2 倍还不够，仍然需要一个 mux（或 DDR 输出）。这是已知的、有意留给 s05 的一步。</p>
+
+    <h3 id="mult">61 个抽头，怎么只剩 15 个乘法器</h3>
+    <p>直接数：61 个抽头里，偶数下标除中心外全为 0 → 31 个位置只有 1 个非零；剩下 30 个奇系数关于中心对称 → 15 对；对称预加后，15 对变成 <strong>15 个乘法器</strong>。</p>
+    <p>对比 s03：47 抽头、对称 → 23 对 + 中心 = 24 个乘法器。s04 抽头更多（61 &gt; 47），乘法器反而更少（15 &lt; 24）——这个反差就是半带理论的兑现。</p>
+
+    <figure class="figure">
+      <div class="canvas">
+        <img src="assets/img/s04-taps.svg" alt="61 个半带抽头：中心 0.5，偶数下标为零，30 个奇数抽头" loading="lazy">
+      </div>
+      <figcaption><span class="fig-label">图 4</span>61 个抽头：中心 <b>0.5</b>，其余偶数下标全为 0（空心灰点），30 个奇数抽头对称成 <b>15 对</b>。偶相 → 0 个乘法器；奇相 → 15 个。</figcaption>
+    </figure>
+
+    <h3 id="width">位宽与流水：和 s03 同一套逻辑</h3>
+    <div class="table-wrap">
+      <table class="data">
+        <thead><tr><th>量</th><th>interp2</th><th>decim2</th><th>怎么来的</th></tr></thead>
+        <tbody>
+          <tr><td>预加和 <code>PA_W</code></td><td>13</td><td>13</td><td>两个 12 位有符号数相加</td></tr>
+          <tr><td>乘积 <code>PROD_W</code></td><td>29</td><td>29</td><td>13 × 16</td></tr>
+          <tr><td>求和 <code>SUM_W</code></td><td>34</td><td>34</td><td>15/16 个乘积相加，+4 位，再留 1 位舍入</td></tr>
+          <tr><td>最终 <code>FINAL_W</code></td><td>35</td><td>35</td><td>加半个 LSB</td></tr>
+          <tr><td>输出 <code>OW</code></td><td>13</td><td>13</td><td>单位增益，留 1 位余量</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p>四级流水与 s03 相同：<code>dly/e_dly/o_dly</code> → <code>p_reg</code> → <code>gsum</code>（4 组）→ 输出。但插值的端到端延迟不能只看“4 拍”：</p>
+    <ul>
+      <li><code>y_o</code> 的第一个抽头 = 冲激采样沿后 <strong>+3</strong>；</li>
+      <li><code>y_e</code> 的源是 <code>dly[15]</code>，延迟线本身贡献 15 个输入样本，再加 3 级寄存器 → 采样沿后 <strong>+18</strong>；</li>
+      <li>ILA 上从触发行算再加 1 拍：<code>y_o</code> <strong>+4</strong>、<code>y_e</code> <strong>+19</strong>。</li>
+    </ul>
+
+    <div class="callout warn">
+      <span class="tag">两相必须对齐</span>
+      <p><code>y_e</code> 走 1 级（<code>dly[15]</code> 直出），<code>y_o</code> 走 4 级。中间那 3 级对齐寄存器一旦漏掉，<strong>每个点的数值都对，拼起来却是错的</strong>。这是多相设计最常见的坑，也是 TB 专门测“偶相冲激在且仅在第 15 拍”的原因。</p>
+    </div>
+
+    <h3 id="tie">0.5 直通项必须在移位之前加</h3>
+    <p>抽取的偶相贡献 <code>0.5·x_e</code>，奇相贡献另一半。这两项必须在<strong>同一个移位点之前</strong>相加：</p>
+    <div class="eq">
+      <span class="eq-title">抽取输出</span>
+      y = ( 2<sup>14</sup>·x_e[n−15] + Σ o[i]·x_o[n−1−i] ) &gt;&gt;&gt; 15
+    </div>
+    <p>如果先各自移位再相加，会丢两次精度、出现两个舍入点，数值就错了。代码里那个 <code>prod_pas</code>（第 16 个“乘积”）就是这一项。</p>
+    <p>TB 里有一个很漂亮的检查点：只打 <code>x_e</code> 冲激时，<code>2047 × 2<sup>14</sup> / 2<sup>15</sup> = 1023.5</code>，正好是舍入 tie，向上取整 = <strong>1024</strong>。这一个数字同时证明了：中心抽头是 0.5、<code>2<sup>14</sup></code> 位置正确、舍入是 round-half-up。</p>
+
+    <h3 id="evidence">验证：393 个检查点与 7 个完整冲激</h3>
+    <div class="table-wrap">
+      <table class="data">
+        <thead><tr><th>层</th><th>手段</th><th>结果</th></tr></thead>
+        <tbody>
+          <tr><td>系数表</td><td>对称、和 = 16384、A(0)/A(0.25)/A(0.5)、幅度互补、阻带</td><td><b>20</b> 个检查点</td></tr>
+          <tr><td>插值</td><td>向量回放 + 偶相冲激 + 奇相 30 点 + 直流 + tie + 饱和 + IW=8</td><td><b>45</b> 个检查点</td></tr>
+          <tr><td>抽取</td><td>两路冲激 + 抗混叠 + 直流 + tie + 饱和</td><td><b>36</b> 个检查点</td></tr>
+          <tr><td>级联</td><td>插值 → 抽取；43 点响应，峰值 1991 在 k=30</td><td><b>24</b> 个检查点</td></tr>
+          <tr><td>顶层</td><td>集成 / 心跳 / 异步复位</td><td><b>29</b> 个检查点</td></tr>
+          <tr><td>反向验证</td><td>偶相源错位 / 去掉 x_o 相位偏移 / 0.5 变 0.25 / 两相接反</td><td>分别 <b>6 / 7 / 14 / 5</b> 条 FAIL</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p>s04 的五个 TB 共 <strong>154 个检查点</strong>；当轮全仓库 <strong>393 个</strong>全绿。反向验证里的 S4 最值得注意：<strong>两相接反时，插值那两路波形完全正常</strong>，只有级联输出错。如果顶层 TB 只检查 <code>y_o</code>，这个 bug 会静默通过。</p>
+
+    <h3 id="board">上板：三路输出逐位对账</h3>
+    <div class="table-wrap">
+      <table class="data">
+        <thead><tr><th>信号</th><th>ILA 位置（触发行 = 0）</th><th>期望</th></tr></thead>
+        <tbody>
+          <tr><td><code>y_e</code></td><td><b>+19</b></td><td>单点 <b>2047</b>，其余 0</td></tr>
+          <tr><td><code>y_o</code></td><td><b>+4 … +33</b></td><td>30 点，峰值 <b>1298</b> 在 +18/+19</td></tr>
+          <tr><td><code>y_rt</code></td><td><b>+17 … +59</b></td><td>43 点，峰值 <b>1991</b> 在 +38，关于 38 对称</td></tr>
+          <tr><td>窗口</td><td colspan="2">8192 点、8 个冲激、周期 1024；CSV 缺 sample 0，实际解析到 <b>7 个完整冲激</b></td></tr>
+          <tr><td>资源</td><td colspan="2"><b>30 DSP</b>（插值 15 + 抽取 15）；WNS <b>9.311 ns</b>（异步复位 recovery 路径；数据通路 <b>+11.043 ns</b>）</td></tr>
+          <tr><td>对账</td><td colspan="2">7 个冲激的 <code>y_e</code> / <code>y_o</code> / <code>y_rt</code> 全部与 Python 整数模型逐位一致，<b>0 LSB</b></td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p>排障顺序可以背下来：<code>y_e</code> 对 → 复位/冲激/延迟对；<code>y_o</code> 对 → 系数表和流水线对；<code>y_rt</code> 对 → <strong>两相相位 + 位宽衔接</strong>对。只有 <code>y_rt</code> 错时，先查 <code>u_decim</code> 的 <code>.x_e/.x_o</code> 有没有接反。</p>
+    <div class="callout blue">
+      <span class="tag">对照上板波形</span>
+      <p>ILA 截图、CSV 逐点表和 s04 的读图口径在 <a href="showcase.html#s04">上板展示 · s04 Resampler</a>。注意 <code>y_e</code> 只有一根孤立的 2047，而 <code>y_rt</code> 是 43 点的完整响应。</p>
+    </div>
+
+    <h3 id="pitfalls">这一轮踩的三个坑</h3>
+    <h4>① 拼接表达式永远是无符号的</h4>
+    <p>抽取的 0.5 直通项第一版写成：</p>
+    <div class="code">
+      <div class="code-head"><b>decim2.v</b><span>错误写法 / 正确写法</span></div>
+<pre><span class="c">// ❌ {...} 拼接是无符号的，负数输入会变成大正数</span>
+<span class="k">wire signed</span> [PROD_W-1:0] prod_pas =
+    {{1{e_dly[K/2][IW-1]}}, e_dly[K/2]} * HALF_COEF;
+
+<span class="c">// ✅ 先过一根 signed wire，让符号性靠赋值目标继承</span>
+<span class="k">wire signed</span> [IW-1:0] e_tap = e_dly[K/2];
+<span class="k">wire signed</span> [PROD_W-1:0] prod_pas = e_tap * HALF_COEF;</pre>
+    </div>
+    <p>症状极有规律：所有正数用例全绿，所有负数用例全红。这和 s03 的 <code>{{1{...}}, xa}</code> 是同一个道理：<strong>符号性靠赋值目标继承，拼接本身不带符号。</strong></p>
+
+    <h4>② 级联的 LAT 是 8，不是 4</h4>
+    <p><code>tb_resample_top.v</code> 第一版按 <code>LAT=4</code> 去对级联冲激响应，结果整段响应右移 4 拍，5 条断言全红——数值本身是“平移后仍然正确”的。教训：<strong>LAT 变了，TB 里的下标偏移也要跟着变</strong>；这种错不会让数值错，只会让“位置”错，很容易被当成“设计坏了”查半天。</p>
+
+    <h4>③ 量化残差给错了抽头</h4>
+    <p>系数生成器第一版把残差给了最外侧的小抽头（30 LSB），残差 −14 打上去变成 16，相对误差 87%。后来改成“先整体缩放让浮点和 = 0.25，残差只剩几个 LSB，再给<strong>离中心最近</strong>的那一对”，残差现在是 0。</p>
+
+    <h3 id="s05">留给 s05 的一步</h3>
+    <p>s04 的接口是<strong>相位并行</strong>的：插值 1 进 2 出、抽取 2 进 1 出，一路时钟。接真实的 1 路 DAC/ADC 前，DUC 方向要加 <strong>2:1 并串</strong>，DDC 方向要加 <strong>1:2 串并</strong>。另外，抽取的 <code>IW</code> 必须等于插值的 <code>OW</code>（13），级联时位宽衔接是硬约束；s05 里 NCO(12) → mixer(13) → interp(13) → … 每一级都要重新规划，这就是“整条链路的增益预算”。</p>
+
+    <div class="takeaways" id="takeaways">
+      <h3>如果只记三件事</h3>
+      <ol>
+        <li><b>插值先塞零再滤波；抽取先滤波再扔点。</b>顺序反了，镜像或混叠就留在信号里，而且折叠不可逆。</li>
+        <li><b>半带让偶相退化成 0.5·z<sup>−15</sup></b>，所以 61 个抽头只要 15 个乘法器；偶相直通是精确等式，不是近似。</li>
+        <li><b>两个 SHIFT 差一位是插值的 ×2</b>：零插值功率掉一半，插值用 <code>CW−2</code>，抽取用 <code>CW−1</code>；0.5 直通项必须在移位前加。</li>
+      </ol>
+    </div>
+
+    <nav class="pager" aria-label="上一篇 / 下一篇">
+      <a href="s03.html"><span class="dir">← 上一篇</span><span class="ttl">s03 · FIR：47 个抽头，一半的乘法器</span></a>
+      <a class="next" href="index.html"><span class="dir">返回 →</span><span class="ttl">文章列表</span></a>
+    </nav>
+  </article>
+
+  <aside class="toc" aria-label="本页目录">
+    <p class="toc-title">本页目录</p>
+    <ol>
+      <li><a href="#principle">01 · 通信原理</a></li>
+      <li><a href="#why">为什么需要重采样</a></li>
+      <li><a href="#interp">插值与镜像</a></li>
+      <li><a href="#halfband">半带的三条约束</a></li>
+      <li><a href="#polyphase">多相分解与偶相直通</a></li>
+      <li><a href="#decim">抽取与抗混叠</a></li>
+      <li><a href="#shift">两个 SHIFT</a></li>
+      <li><a href="#impl">02 · FPGA 实现</a></li>
+      <li><a href="#arch">相位并行接口</a></li>
+      <li><a href="#mult">15 个乘法器</a></li>
+      <li><a href="#width">位宽与流水</a></li>
+      <li><a href="#tie">0.5 直通项</a></li>
+      <li><a href="#evidence">验证证据</a></li>
+      <li><a href="#board">上板实测</a></li>
+      <li><a href="#pitfalls">三个坑</a></li>
+      <li><a href="#takeaways">记忆锚点</a></li>
+    </ol>
+    <div class="toc-foot">
+      <a href="showcase.html#s04">→ 看 s04 上板波形</a>
+      <a href="s03.html">← 上一篇：s03 FIR</a>
+      <a href="index.html">← 全部文章</a>
+    </div>
+  </aside>
+</div>
+
+<footer class="site-foot">
+  <div class="wrap">
+    <div class="foot-id">
+      <span class="foot-mark">FC</span>
+      <div>
+        <p><b>Fernando Cheung</b> · FPGA / 基带数据通路</p>
+        <p>个人技术笔记 · 教学演示与技术分享</p>
+      </div>
+    </div>
+    <div>
+      <p>数据来源：<code>fpga-lab</code> 的 <code>s04_resample/</code>、<code>logs/s04_resample/</code>、<code>docs/学习备忘.md</code> 第 14–15 节。</p>
+      <div class="foot-links">
+        <a href="index.html">文章列表</a>
+        <a href="showcase.html">上板波形</a>
+        <a href="s03.html">上一篇 s03</a>
+      </div>
+    </div>
+  </div>
+</footer>
+
+</body>
+</html>

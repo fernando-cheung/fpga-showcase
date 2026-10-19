@@ -1,0 +1,297 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="color-scheme" content="dark">
+<meta name="description" content="NCO 数控振荡器：从连续相位到相位累加器、查表、相位截断、正交本振与 FPGA 定点实现。s01 原理笔记。">
+<meta name="author" content="Fernando Cheung">
+<title>s01 · NCO 数控振荡器 — 从相位到正弦 | FPGA Showcase</title>
+<link rel="icon" href="assets/favicon.svg" type="image/svg+xml">
+<meta name="theme-color" content="#050b0d">
+<link rel="stylesheet" href="assets/site.css">
+</head>
+<body>
+
+<header class="site-head">
+  <div class="wrap">
+    <a class="logo" href="index.html">
+      <span class="logo-mark">FC</span>
+      <span class="logo-text"><b>FPGA SHOWCASE</b><small>BASEBAND DATA PATH</small></span>
+    </a>
+    <nav class="site-nav" aria-label="站点导航">
+      <a href="index.html">文章列表</a><span class="sep"></span>
+      <a class="active" href="s01.html">01 NCO</a>
+      <a href="s02.html">02 混频</a>
+      <a href="s03.html">03 FIR</a>
+      <a href="s04.html">04 重采样</a><span class="sep"></span>
+      <a href="showcase.html">上板波形</a>
+    </nav>
+  </div>
+</header>
+
+<section class="page-hero">
+  <div class="wrap">
+    <div class="crumbs">
+      <a href="index.html">文章列表</a><span class="slash">/</span>
+      <span>s01 · NCO</span><span class="slash">/</span>
+      <span>通信原理 + FPGA 实现</span>
+    </div>
+    <h1>让角度匀速转，<br><em>正弦就自己长出来。</em></h1>
+    <p class="lede">NCO 不计算 <code>sin()</code>。它把“角度”存成一个不断累加的二进制数，溢出就自然绕回一圈；再拿高位去查表，把角度翻译成样本。一个加法器加一块 ROM，就构成了整条数据通路的频率基准。</p>
+    <div class="meta">
+      <span class="chip"><span class="dot"></span><b>32</b> 位相位累加器</span>
+      <span class="chip"><b>4096 × 12</b> 查表</span>
+      <span class="chip">输出 <b>100 kHz</b> @ 50 MHz</span>
+      <span class="chip">频率误差 <b>−0.069 ppm</b></span>
+      <span class="chip">表约占 <b>3</b> 个 BRAM tile</span>
+    </div>
+    <div class="hero-rule"></div>
+  </div>
+</section>
+
+<div class="wrap article-layout">
+  <article class="prose article-body">
+
+    <div class="part-head" id="principle">
+      <div class="part-no">01</div>
+      <div>
+        <p class="part-kicker">PART ONE · 通信原理</p>
+        <h2>先让角度转起来</h2>
+      </div>
+      <span class="part-tag">THEORY</span>
+    </div>
+
+    <h3 id="why">本振不是“算”出来的，是“转”出来的</h3>
+    <p class="lead">一个频率为 <code>f</code> 的复正弦，可以写成 <code>e<sup>j2πft</sup></code>。它的全部信息只有两件：<strong>角度以多快的速度转</strong>，以及<strong>此刻转到哪</strong>。NCO 把这两件事分别交给一个加法和一个寄存器。</p>
+    <p>连续时间里角度是 <code>2πft</code>；离散到每 <code>T<sub>s</sub> = 1/f<sub>clk</sub></code> 采一次，第 <code>n</code> 拍的角度就是 <code>2πfnT<sub>s</sub></code>。与其每拍重新乘一次，不如只算<strong>增量</strong>：</p>
+
+    <div class="eq">
+      <span class="eq-title">相位递推 · 频率反解</span>
+      φ[n+1] = ( φ[n] + Δφ ) mod 2<sup>PHASE_W</sup><br>
+      Δφ = 2π · FTW / 2<sup>PHASE_W</sup><br>
+      f<sub>out</sub> = FTW · f<sub>clk</sub> / 2<sup>PHASE_W</sup>
+    </div>
+
+    <p>这里 <code>FTW</code>（frequency tuning word，频率控制字）是每拍加进相位寄存器的整数。因为寄存器只有 <code>PHASE_W</code> 位，加到 <code>2<sup>PHASE_W</sup></code> 自然溢出回零——<strong>二进制回绕就是“转完一圈”</strong>，不需要比较器、减法器或状态机。</p>
+
+    <div class="callout key">
+      <span class="tag">关键转折</span>
+      <p>NCO 最漂亮的地方不是“查表”，而是<strong>用溢出代替归零判断</strong>。计数器要写 <code>if (cnt == N-1) cnt &lt;= 0;</code>，NCO 只写 <code>phase &lt;= phase + FTW;</code>。这一行同时完成了“走一步”和“绕一圈”。</p>
+    </div>
+
+    <h3 id="params">三个位宽，三件不同的事</h3>
+    <p>初学者最容易把 <code>PHASE_W</code> 和 <code>LUT_AW</code> 混成一个东西。它们管的其实是两件完全不同的事：一个管<strong>频率能拧多细</strong>，一个管<strong>波形能有多干净</strong>。</p>
+    <div class="table-wrap">
+      <table class="data">
+        <thead><tr><th>参数</th><th>管什么</th><th>本设计取值</th><th>代价</th></tr></thead>
+        <tbody>
+          <tr><td><code>PHASE_W</code></td><td>频率分辨率 = <code>f<sub>clk</sub> / 2<sup>PHASE_W</sup></code></td><td>32 位 → <b>0.0116 Hz</b></td><td>加法器宽一点，触发器多一点</td></tr>
+          <tr><td><code>LUT_AW</code></td><td>相位截断后的查表精度，决定杂散</td><td>12 位 → 4096 项</td><td>ROM 容量按 <b>2<sup>LUT_AW</sup></b> 指数增长</td></tr>
+          <tr><td><code>AW</code></td><td>幅度量化位数，决定量化 SNR</td><td>12 位 → 约 <b>74 dB</b></td><td>每个表项变宽，ROM 线性增长</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p>如果图省事把 <code>PHASE_W</code> 也设成 12，50 MHz 时钟下频率分辨率只有 12,207 Hz。想做 100 kHz，<code>FTW</code> 只能取 8，实际输出 97,656 Hz，误差约 <strong>−2.34%</strong>。省下 20 个触发器，换来 2.3% 的频率偏差，不划算。</p>
+
+    <div class="callout">
+      <span class="tag">一句话</span>
+      <p><strong>精度花在频率上，不花在波形上。</strong>相位累加器给 32 位，查表地址只取高 12 位；前者决定“能不能调准”，后者决定“波形干不干净”。</p>
+    </div>
+
+    <h3 id="truncation">相位截断：省 ROM 的代价</h3>
+    <p>32 位相位不能直接当 4096 项表的地址，只能取高 12 位，低 20 位被丢掉。这叫<strong>相位截断</strong>（phase truncation）。它不会改变平均频率——每拍仍然平均前进 8.192 个表地址——但会让每一拍的相位有微小抖动，频谱上因此出现杂散。</p>
+    <p>经验规律是：<strong>地址每多 1 位，最坏杂散大约改善 6 dB</strong>。代价是 ROM 容量翻倍。4096 项 × 12 位 = 49,152 bit，在 7 系列 FPGA 上大约占 <strong>3 个 BRAM tile</strong>；加到 8192 项就约 6 个。所以 4096 不是随便定的，它是“杂散够用”和“BRAM 够省”的折中。</p>
+    <p>本设计里 <code>FTW = 8,589,934</code>，每拍前进 <code>8.192</code> 个表地址，一个周期正好 <strong>500 个采样点</strong>，8192 点 ILA 窗口里是 <strong>16.384 个周期</strong>。</p>
+
+    <h3 id="quadrature">正交不是“两路一样”，是“同一个相位”</h3>
+    <p>NCO 同时输出 <code>sin</code> 和 <code>cos</code>，两者来自<strong>同一个相位寄存器</strong>，只是查了两张表。所以它们的 90° 相位差是生成时保证的，不靠模拟器件的匹配，也没有温漂和老化。</p>
+    <p>这一点对复数混频至关重要：混频器需要的本振是 <code>cos + j·sin</code>，即 <code>e<sup>jφ</sup></code>。如果 I/Q 两路幅度不等或相位不是精确 90°，镜像抑制就会变差；而数字 NCO 把这两个误差从“器件问题”变成了“位宽和表的问题”，可以算、可以测、可以复现。</p>
+
+    <figure class="figure">
+      <div class="canvas">
+        <!-- SVG: 100 kHz sin/cos, 2 cycles -->
+        <img src="assets/img/s01-wave.svg" alt="100 kHz 正弦与余弦波形，20 微秒内两个周期" loading="lazy">
+      </div>
+      <figcaption><span class="fig-label">图 1</span>同一个相位查两张表：<b>sin</b> 与 <b>cos</b> 天然正交。20 µs 内正好两个周期，对应 100 kHz；每个周期 500 个 50 MHz 采样点。</figcaption>
+    </figure>
+
+    <figure class="figure">
+      <div class="canvas">
+        <img src="assets/img/s01-phase.svg" alt="相位累加器查表地址随拍数锯齿上升" loading="lazy">
+      </div>
+      <figcaption><span class="fig-label">图 2</span>每拍加 <b>8.192</b> 个表地址，约 500 拍绕一圈。溢出不是错误，而是“相位转满 360°”的二进制表达。</figcaption>
+    </figure>
+
+    <h3 id="error">频率误差：截断让方向可预测</h3>
+    <p><code>FTW</code> 只能取整，本设计一律<strong>向下截断</strong>。理由是让误差方向可预测：截断必然让 <code>FTW</code> 偏小，实际频率必然偏低，偏差上界是 1 个 <code>FTW</code> LSB。四舍五入会让误差在正负之间跳，讲误差时说不清方向。</p>
+    <div class="eq">
+      <span class="eq-title">本设计的真实数字</span>
+      FTW = 100,000 × 2<sup>32</sup> / 50,000,000 = 8,589,934.592 → <b>8,589,934</b><br>
+      f<sub>out</sub> = 8,589,934 × 50,000,000 / 2<sup>32</sup> = <b>99,999.9931 Hz</b><br>
+      偏差 = <b>−0.0069 Hz ≈ −0.069 ppm</b>　<span class="dim">（方向：偏低，和截断约定一致）</span>
+    </div>
+    <p>这个量级用“数周期”根本测不出来：100 个周期的频率分辨率只有约 130 ppm。它只能靠<strong>算术对账</strong>验证，不能靠肉眼。</p>
+
+    <div class="part-head" id="impl">
+      <div class="part-no">02</div>
+      <div>
+        <p class="part-kicker">PART TWO · FPGA 实现</p>
+        <h2>一个加法器，一块 ROM</h2>
+      </div>
+      <span class="part-tag">RTL</span>
+    </div>
+
+    <h3 id="arch">结构：相位寄存器 + 双路查表</h3>
+    <div class="flow">
+      <div class="flow-node"><span class="n">REG</span><b>相位累加器</b><small>PHASE_W = 32</small></div>
+      <div class="flow-arrow">→</div>
+      <div class="flow-node"><span class="n">SLICE</span><b>取高 12 位</b><small>addr[11:0]</small></div>
+      <div class="flow-arrow">→</div>
+      <div class="flow-node"><span class="n">ROM</span><b>sin 表</b><small>4096 × 12</small></div>
+      <div class="flow-arrow">→</div>
+      <div class="flow-node alt"><span class="n">OUT</span><b>fsin_o</b><small>12 位补码</small></div>
+      <div class="flow-note">同一地址再查一张 cos 表 → <b>fcos_o</b>；两路共用一个相位，因此严格正交。输出比相位晚 1 拍（ROM 同步读）。</div>
+    </div>
+
+    <h3 id="table">表从哪来：脚本生成，仿真和综合读同一份</h3>
+    <p>仿真里可以用 <code>$sin</code> 现算，但 <strong>Vivado 综合不了 <code>$sin</code></strong>。所以表必须在 PC 上离线生成成常量文件，RTL 用 <code>$readmemh</code> 读入。这样仿真和综合读的是<strong>同一份数据</strong>，不会出现“仿真对、上板错”。</p>
+    <div class="code">
+      <div class="code-head"><b>s01_nco/lut/</b><span>脚本生成的常量表</span></div>
+<pre>sin.mem / cos.mem   <span class="c">// 4096 行 × 12 位，二进制补码，一行一个十六进制数</span>
+gen_lut.py          <span class="c">// PC 上算 sin/cos、量化、写文件</span>
+tb_lut.v            <span class="c">// 表本身的 12 个检查点，已并入 make sim</span></pre>
+    </div>
+    <p>RTL 里读表的路径由宏 <code>NCO_LUTDIR</code> 给出，仿真和综合各传各的绝对路径。这个宏不是“可选的整洁”，而是必须的：<code>$readmemh</code> 的路径相对于<strong>进程工作目录</strong>，不是相对于 <code>.v</code> 文件。仿真在 <code>build/</code> 跑，综合在 <code>.runs/synth_1/</code> 跑，相对路径永远错，而且 iverilog 不报错，只给你一片 <code>x</code>。</p>
+
+    <h3 id="fixed">定点：为什么幅值停在 ±2047</h3>
+    <p>sin/cos 天然有负半周，所以表里存 12 位<strong>二进制补码</strong>。12 位能表示 −2048 到 +2047，但本设计只用到 ±2047，不用 −2048。原因是对称量化：如果用满 −2048，正负幅度不对称，会在表里引入一个微小的直流偏置；后面做复数混频时，这个直流会污染频谱。</p>
+    <div class="callout">
+      <span class="tag">取舍</span>
+      <p>代价是损失 1 个负向码字，约 0.02 dB 的动态范围；换来的是<strong>表里无直流、正负严格对称</strong>。对一条要做频谱搬移的通路，这笔交易很划算。</p>
+    </div>
+
+    <h3 id="rtl">RTL 的三个关键点</h3>
+    <div class="code">
+      <div class="code-head"><b>rtl/nco.v</b><span>核心只有三行</span></div>
+<pre><span class="c">// 1. 相位一直加，溢出就是绕一圈</span>
+phase &lt;= phase + FTW;
+
+<span class="c">// 2. 只取高位做地址：低位被截断</span>
+addr  &lt;= phase[PHASE_W-1 -: LUT_AW];
+
+<span class="c">// 3. 表输出声明为 signed，负数才不会被当成大正数</span>
+<span class="k">reg signed</span> [AW-1:0] fsin_o, fcos_o;</pre>
+    </div>
+    <p><code>FTW</code> 是<strong>编译期常量</strong>，不是运行期算出来的。RTL 里只有一个加法器；<code>FTW</code> 的乘除、取整、位宽溢出都在 <code>localparam</code> 里由综合工具折叠掉。</p>
+    <p>这里有一个 Verilog 的坑：<code>100,000 × 2<sup>32</sup></code> 约 <code>4.3 × 10<sup>14</sup></code>，远超 32 位。写 <code>1 &lt;&lt; 32</code> 在 32 位下是未定义行为，而且不报错。稳妥写法是用实数算完再截断，或用 64 位字面量：</p>
+    <div class="code">
+      <div class="code-head"><b>localparam</b><span>两种不会溢出的写法</span></div>
+<pre><span class="c">// ✅ 实数算完再截断，综合时折叠成常量</span>
+<span class="k">localparam real</span>    FTW_REAL = FREQ_HZ * (2.0 ** PHASE_W) / CLK_HZ;
+<span class="k">localparam integer</span> FTW      = $rtoi(FTW_REAL);
+
+<span class="c">// ✅ 或者用 64 位字面量</span>
+<span class="k">localparam integer</span> FTW = (FREQ_HZ * (<span class="n">64'd1</span> &lt;&lt; PHASE_W)) / CLK_HZ;</pre>
+    </div>
+
+    <h3 id="evidence">验证：黑盒测周期，白盒查表</h3>
+    <p>NCO 的验收分两层：<code>tb_nco.v</code> 的 <strong>21 个检查点</strong>看行为，<code>tb_lut.v</code> 的 <strong>12 个检查点</strong>看表本身。行为层不盯某一个固定样本，而盯对采样格点不敏感的关系。</p>
+    <div class="table-wrap">
+      <table class="data">
+        <thead><tr><th>判据</th><th>怎么测</th><th>结果</th></tr></thead>
+        <tbody>
+          <tr><td>周期正确</td><td>黑盒数 sin 峰值间隔：<code>PHASE_W=16, FTW=1024</code> → <code>2<sup>16</sup>/1024 = 64</code> 拍</td><td><b>64 拍</b></td></tr>
+          <tr><td>幅度恒定</td><td><code>sin² + cos²</code> 与理想值 <code>2047² = 4,190,209</code> 的偏差</td><td>仿真全窗最大 <b>2,591</b>；板上 CSV <b>2,304</b>。理论上界 <b>2,895</b>，判据 <b>4,096</b></td></tr>
+          <tr><td>频率误差可解释</td><td>偏差方向与大小对上 <code>FTW</code> 截断，而不是“差不多”</td><td>偏低 ≤ 1 个 LSB</td></tr>
+          <tr><td>参数真的起作用</td><td>换 <code>PHASE_W=24</code> 再跑一组（频率不变）</td><td>通过</td></tr>
+          <tr><td>反向验证</td><td>改坏地址移位 / 删输出复位 / sin-cos 互换</td><td>分别 <b>7 / 2 / 3</b> 条 FAIL</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p><code>sin² + cos²</code> 的判据 4,096 比理论上界 2,895 宽约 41%。这不是“拍脑袋放宽”，而是有意<strong>宁可漏报、不可误报</strong>：它只负责兜住“幅度整体跑偏”这类粗错，真正抓 bug 的是周期、频率和向量逐点比对。</p>
+
+    <h3 id="board">上板看到的是什么</h3>
+    <p>ILA 窗口 8192 点 × 20 ns = 163.84 µs，里面正好 <strong>16.384 个周期</strong>。触发点落在 <code>fsin=2047</code> 的峰值上；此时 <code>cos</code> 不一定为 0，因为地址每拍跳 8.192 格，采样点通常落在两个表项之间，抓到的可能只是正弦平坦顶部的某个点。这不是正交错了，是<strong>离散采样的正常现象</strong>。</p>
+    <div class="callout blue">
+      <span class="tag">对照上板波形</span>
+      <p>完整的 ILA 截图、CSV 对账和读图约定在 <a href="showcase.html#s01">上板展示 · s01 NCO</a>。那边看波形，这边看“为什么波形应该长这样”。</p>
+    </div>
+
+    <h3 id="pitfalls">这一节最容易踩的四个坑</h3>
+    <div class="table-wrap">
+      <table class="data">
+        <thead><tr><th>现象</th><th>根因</th><th>怎么查</th></tr></thead>
+        <tbody>
+          <tr><td>仿真全是 <code>x</code>，板上灯全灭</td><td><code>$readmemh</code> 路径相对工作目录，表没读进来</td><td>看 <code>report_utilization</code> 的 BRAM：应该是 3，若是 0 就是表没了</td></tr>
+          <tr><td>ILA 上波形像“∩ 接 ∪”</td><td>补码被按无符号显示</td><td>把 ILA 探针改成 signed，或按 <code>v + 2<sup>AW</sup></code> 还原</td></tr>
+          <tr><td>改了参数，综合结果没变</td><td>顶层实例化覆盖了底层默认值，模块内改默认值无效</td><td>看 <code>synth_1/&lt;top&gt;.tcl</code> 里真正的 <code>synth_design</code> 命令行</td></tr>
+          <tr><td>频率怎么算都不对</td><td><code>1 &lt;&lt; 32</code> 在 32 位下溢出/未定义</td><td>改用 <code>real</code> 或 64 位字面量算 <code>FTW</code></td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p>还有一个“看起来像坑、其实不是”的现象：资源用量比预期少得离谱，往往不是优化得好，而是<strong>有东西被优化没了</strong>。NCO 如果真的只剩 2 个寄存器（<code>reset_sync</code> 的两个触发器），先怀疑表没进来，而不是庆祝。</p>
+
+    <div class="takeaways" id="takeaways">
+      <h3>如果只记三件事</h3>
+      <ol>
+        <li><b>相位累加器用二进制回绕代替比较逻辑</b>——这是 NCO 的结构灵魂，也是它比“数到 N 归零”的计数器更适合做本振的原因。</li>
+        <li><b><code>PHASE_W</code> 管频率精度，<code>LUT_AW</code> 管波形纯度</b>——两个位宽职责不同，不要为了省触发器把它们设成一样。</li>
+        <li><b>离散采样点上“某一点的值”不可断言</b>——要断言周期、能量、<code>sin²+cos²</code> 这类对采样格点不敏感的量。</li>
+      </ol>
+    </div>
+
+    <nav class="pager" aria-label="上一篇 / 下一篇">
+      <a href="index.html"><span class="dir">← 返回</span><span class="ttl">文章列表</span></a>
+      <a class="next" href="s02.html"><span class="dir">下一篇 →</span><span class="ttl">s02 · 复数混频：把频率搬到和、差上</span></a>
+    </nav>
+  </article>
+
+  <aside class="toc" aria-label="本页目录">
+    <p class="toc-title">本页目录</p>
+    <ol>
+      <li><a href="#principle">01 · 通信原理</a></li>
+      <li><a href="#why">让角度转起来</a></li>
+      <li><a href="#params">三个位宽，三件事</a></li>
+      <li><a href="#truncation">相位截断的代价</a></li>
+      <li><a href="#quadrature">正交来自同一个相位</a></li>
+      <li><a href="#error">频率误差</a></li>
+      <li><a href="#impl">02 · FPGA 实现</a></li>
+      <li><a href="#arch">结构</a></li>
+      <li><a href="#table">表从哪来</a></li>
+      <li><a href="#fixed">定点与 ±2047</a></li>
+      <li><a href="#rtl">RTL 关键点</a></li>
+      <li><a href="#evidence">验证证据</a></li>
+      <li><a href="#pitfalls">四个坑</a></li>
+      <li><a href="#takeaways">记忆锚点</a></li>
+    </ol>
+    <div class="toc-foot">
+      <a href="showcase.html#s01">→ 看 s01 上板波形</a>
+      <a href="s02.html">→ 下一篇：s02 混频</a>
+      <a href="index.html">← 全部文章</a>
+    </div>
+  </aside>
+</div>
+
+<footer class="site-foot">
+  <div class="wrap">
+    <div class="foot-id">
+      <span class="foot-mark">FC</span>
+      <div>
+        <p><b>Fernando Cheung</b> · FPGA / 基带数据通路</p>
+        <p>个人技术笔记 · 教学演示与技术分享</p>
+      </div>
+    </div>
+    <div>
+      <p>数据来源：<code>fpga-lab</code> 的 <code>s01_nco/</code>、<code>docs/学习备忘.md</code>，以及 2026-10-15 的仿真与上板记录。</p>
+      <div class="foot-links">
+        <a href="index.html">文章列表</a>
+        <a href="showcase.html">上板波形</a>
+        <a href="s02.html">下一篇 s02</a>
+      </div>
+    </div>
+  </div>
+</footer>
+
+</body>
+</html>

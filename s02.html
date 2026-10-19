@@ -1,0 +1,301 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="color-scheme" content="dark">
+<meta name="description" content="复数混频：实数混频的和频/差频、复指数单边带搬移、I/Q 正交、CONJ 共轭、定点舍入与饱和，以及 s02 的 FPGA 实现与上板证据。">
+<meta name="author" content="Fernando Cheung">
+<title>s02 · 复数混频 — 把频率搬到和、差上 | FPGA Showcase</title>
+<link rel="icon" href="assets/favicon.svg" type="image/svg+xml">
+<meta name="theme-color" content="#050b0d">
+<link rel="stylesheet" href="assets/site.css">
+</head>
+<body>
+
+<header class="site-head">
+  <div class="wrap">
+    <a class="logo" href="index.html">
+      <span class="logo-mark">FC</span>
+      <span class="logo-text"><b>FPGA SHOWCASE</b><small>BASEBAND DATA PATH</small></span>
+    </a>
+    <nav class="site-nav" aria-label="站点导航">
+      <a href="index.html">文章列表</a><span class="sep"></span>
+      <a href="s01.html">01 NCO</a>
+      <a class="active" href="s02.html">02 混频</a>
+      <a href="s03.html">03 FIR</a>
+      <a href="s04.html">04 重采样</a><span class="sep"></span>
+      <a href="showcase.html">上板波形</a>
+    </nav>
+  </div>
+</header>
+
+<section class="page-hero">
+  <div class="wrap">
+    <div class="crumbs">
+      <a href="index.html">文章列表</a><span class="slash">/</span>
+      <span>s02 · Mixer</span><span class="slash">/</span>
+      <span>通信原理 + FPGA 实现</span>
+    </div>
+    <h1>把频率搬到和、差上，<br><em>然后只留下一个。</em></h1>
+    <p class="lede">实数混频会同时产生和频与差频，两个都留在频谱里；复数混频用一次复乘，把信号只搬到一个方向。s02 用两个 NCO 在板上造出 250 kHz 的复单音和 200 kHz 的本振，ILA 上同时验证了 50 kHz 的差频与 450 kHz 的和频。</p>
+    <div class="meta">
+      <span class="chip"><span class="dot"></span>输入 <b>250 kHz</b></span>
+      <span class="chip">本振 <b>200 kHz</b></span>
+      <span class="chip">下变频 <b>50 kHz</b> · 上变频 <b>450 kHz</b></span>
+      <span class="chip"><b>4</b> 个 12×12 乘法器</span>
+      <span class="chip">全精度 <b>25</b> 位</span>
+    </div>
+    <div class="hero-rule"></div>
+  </div>
+</section>
+
+<div class="wrap article-layout">
+  <article class="prose article-body">
+
+    <div class="part-head" id="principle">
+      <div class="part-no">01</div>
+      <div>
+        <p class="part-kicker">PART ONE · 通信原理</p>
+        <h2>为什么需要“复数”混频</h2>
+      </div>
+      <span class="part-tag">THEORY</span>
+    </div>
+
+    <h3 id="real">实数混频：一次乘法，两份结果</h3>
+    <p class="lead">最朴素的混频就是把输入乘上本振。用三角恒等式展开：</p>
+    <div class="eq">
+      <span class="eq-title">实数混频</span>
+      cos(2πf<sub>in</sub>t) · cos(2πf<sub>lo</sub>t)<br>
+      = ½ cos[2π(f<sub>in</sub> − f<sub>lo</sub>)t] + ½ cos[2π(f<sub>in</sub> + f<sub>lo</sub>)t]
+    </div>
+    <p>差频与和频<strong>同时出现</strong>，而且幅度都只有原来的一半。如果只想保留其中一个，后面必须跟一个滤波器；更麻烦的是，在接收机里，位于本振另一侧的“镜像频率”会搬到同一个中频上，和有用信号叠在一起，滤不掉。</p>
+    <p>这就是实数混频的固有代价：<strong>它分不清正频率和负频率</strong>。一个实正弦 <code>cos(2πft)</code> 在频谱上有 <code>+f</code> 和 <code>−f</code> 两根谱线，乘上本振后，四根谱线两两相加，必然产生两个输出。</p>
+
+    <h3 id="complex">复数混频：一次乘法，一个方向</h3>
+    <p>如果把信号表示成复指数 <code>e<sup>j2πf<sub>in</sub>t</sup></code>，它只有<strong>一个</strong>频率分量。乘上复本振 <code>e<sup>j2πf<sub>lo</sub>t</sup></code>：</p>
+    <div class="eq">
+      <span class="eq-title">复数混频</span>
+      e<sup>j2πf<sub>in</sub>t</sup> · e<sup>j2πf<sub>lo</sub>t</sup> = e<sup>j2π(f<sub>in</sub>+f<sub>lo</sub>)t</sup>　<span class="dim">（上变频）</span><br>
+      e<sup>j2πf<sub>in</sub>t</sup> · e<sup>−j2πf<sub>lo</sub>t</sup> = e<sup>j2π(f<sub>in</sub>−f<sub>lo</sub>)t</sup>　<span class="dim">（下变频）</span>
+    </div>
+    <p>输出只有一个频率。方向由本振的指数符号决定：<code>e<sup>+jφ</sup></code> 是上变频，<code>e<sup>−jφ</sup></code> 是下变频。工程上用 <code>CONJ</code> 参数选择是否对本振取共轭。</p>
+    <div class="callout key">
+      <span class="tag">核心</span>
+      <p>复数混频不是“更高级的数学”，而是<strong>用两路实信号（I/Q）携带一个复数的全部信息</strong>。有了 I/Q，正频率和负频率就可以区分，镜像才能被抑制。</p>
+    </div>
+
+    <h3 id="math">I/Q 两路到底怎么算</h3>
+    <p>把复数写成 <code>(i + jq)</code>，本振写成 <code>(cos + j sin)</code>，直接做复数乘法：</p>
+    <div class="eq">
+      <span class="eq-title">上变频 · CONJ = 0</span>
+      i<sub>out</sub> = i·cos − q·sin<br>
+      q<sub>out</sub> = i·sin + q·cos
+    </div>
+    <div class="eq">
+      <span class="eq-title">下变频 · CONJ = 1（本振取共轭）</span>
+      i<sub>out</sub> = i·cos + q·sin<br>
+      q<sub>out</sub> = q·cos − i·sin
+    </div>
+    <p>注意下变频时<strong>两路都要翻符号</strong>：<code>i·cos + q·sin</code> 和 <code>q·cos − i·sin</code>。只翻 q 路得到的东西既不是上变频也不是下变频，而是一个相位关系错误的结果。s02 第一版就踩过这个坑，而且 Python 参考模型犯了同一个错，向量回放全绿——详见下面的「踩过的坑」。</p>
+
+    <h3 id="negative">负频率不是玄学</h3>
+    <p>在实数世界里，<code>−f</code> 和 <code>+f</code> 是同一根谱线；在复数世界里，它们是两个不同的旋转方向：<code>e<sup>j2πft</sup></code> 逆时针转，<code>e<sup>−j2πft</sup></code> 顺时针转。I/Q 两路正好能记录“转的方向”。</p>
+    <p>所以复数混频的“只搬一个方向”，本质是<strong>保留了旋转方向的信息</strong>。一旦把 I/Q 合成一路实数，方向信息就丢了，和频与差频又会同时出现。</p>
+
+    <figure class="figure">
+      <div class="canvas">
+        <img src="assets/img/s02-spectrum.svg" alt="上变频与下变频频谱：输入 250 kHz、本振 200 kHz、输出 450 kHz 或 50 kHz" loading="lazy">
+      </div>
+      <figcaption><span class="fig-label">图 1</span>同一个输入、同一个本振，只改 <b>CONJ</b>：上变频取和频 <b>450 kHz</b>，下变频取差频 <b>50 kHz</b>。图上只画正频率分量。</figcaption>
+    </figure>
+
+    <figure class="figure">
+      <div class="canvas">
+        <img src="assets/img/s02-wave.svg" alt="输入 250 kHz 与下变频输出 50 kHz 的时域波形" loading="lazy">
+      </div>
+      <figcaption><span class="fig-label">图 2</span>输入 250 kHz、输出 50 kHz，频率比 <b>5 : 1</b>。ILA 上输出周期 <b>1000</b> 个采样点，输入周期 <b>200</b> 个点——这就是“频率确实被搬走了”的最直接证据。</figcaption>
+    </figure>
+
+    <h3 id="iq">正交误差会变成镜像</h3>
+    <p>复数混频能抑制镜像，前提是 I/Q 两路<strong>幅度相等、相位精确相差 90°</strong>。如果本振有幅度误差 <code>ε</code> 或相位误差 <code>θ</code>，镜像抑制比大约会掉到：</p>
+    <div class="eq">
+      <span class="eq-title">镜像抑制的近似</span>
+      IRR ≈ −20·log<sub>10</sub>( √( (ε/2)² + (θ/2)² ) )　<span class="dim">（小误差近似）</span>
+    </div>
+    <p>模拟正交解调器要靠器件匹配，温漂和老化都会让 <code>ε/θ</code> 变大。数字 NCO 的 sin/cos 来自同一个相位和同一张表的对称量化，90° 是<strong>生成时保证</strong>的；剩下的误差只来自位宽和表，可以算、可以测。</p>
+
+    <div class="part-head" id="impl">
+      <div class="part-no">02</div>
+      <div>
+        <p class="part-kicker">PART TWO · FPGA 实现</p>
+        <h2>四个乘法器，一个寄存器</h2>
+      </div>
+      <span class="part-tag">RTL</span>
+    </div>
+
+    <h3 id="arch">结构：复乘展开成四个实乘</h3>
+    <div class="flow">
+      <div class="flow-node"><span class="n">IN</span><b>i_in / q_in</b><small>12 位补码</small></div>
+      <div class="flow-arrow">→</div>
+      <div class="flow-node"><span class="n">×4</span><b>i·cos, q·sin<br>i·sin, q·cos</b><small>12 × 12</small></div>
+      <div class="flow-arrow">→</div>
+      <div class="flow-node"><span class="n">±</span><b>两两加减</b><small>CONJ 决定符号</small></div>
+      <div class="flow-arrow">→</div>
+      <div class="flow-node alt"><span class="n">REG</span><b>舍入 / 饱和</b><small>晚 1 拍输出</small></div>
+      <div class="flow-note">上变频：<b>i·cos − q·sin</b> / <b>i·sin + q·cos</b>；下变频：<b>i·cos + q·sin</b> / <b>q·cos − i·sin</b>。</div>
+    </div>
+
+    <h3 id="width">位宽：全精度 25 位，最后才截</h3>
+    <p>两个 12 位有符号数相乘，全精度乘积是 24 位；两路相加再多 1 位，所以和是 <code>IW + AW + 1 = 25</code> 位。极限情况 <code>(−2048) × (−2048) × 2 = 2<sup>23</sup></code>，24 位补码最大只到 <code>2<sup>23</sup> − 1</code>，所以确实需要第 25 位。</p>
+    <div class="table-wrap">
+      <table class="data">
+        <thead><tr><th>量</th><th>位宽</th><th>怎么来的</th></tr></thead>
+        <tbody>
+          <tr><td>输入 / 本振</td><td><code>IW = AW = 12</code></td><td>NCO 输出 12 位补码</td></tr>
+          <tr><td>全精度和</td><td><code>IW + AW + 1 = 25</code></td><td>两路乘积相加，留 1 位进位</td></tr>
+          <tr><td>右移</td><td><code>SHIFT = AW − 1 = 11</code></td><td>把“平方”的定点尺度除回去，恢复单位增益</td></tr>
+          <tr><td>输出</td><td><code>OW = IW + 1 = 13</code></td><td>单位增益下 12 位够，多 1 位防舍入越界</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p>定点数相乘会把尺度“平方”：本振幅度 1.0 对应 <code>2<sup>AW−1</sup></code>，乘完后尺度变成 <code>2<sup>2AW−2</sup></code>。所以右移 <code>AW−1</code> 位，正好把尺度除回单位增益。移少了输出整体放大、容易削顶；移多了白白丢低位精度。</p>
+
+    <h3 id="round">舍入与饱和：两个都不能省</h3>
+    <p>右移在硬件里是“向 −∞ 取整”，会给输出带来约 <code>−0.5 LSB</code> 的直流偏置。<code>ROUND=1</code> 先加半个 LSB 再移，变成四舍五入（tie 一律向 <code>+∞</code>），偏置基本消掉，代价只是一个加法器。</p>
+    <p>加半个 LSB 之后，最大正值可能刚好越过上界，所以顺序必须是：<strong>先加宽 1 位 → 舍入 → 饱和到 OW</strong>。如果省略饱和、让结果回绕，最大的正数会突然变成最大的负数，波形上就是削顶处翻符号——定点设计里最经典的一类事故。</p>
+    <div class="table-wrap">
+      <table class="data">
+        <thead><tr><th>输入（移位前）</th><th><code>ROUND=1</code></th><th><code>ROUND=0</code></th><th>说明</th></tr></thead>
+        <tbody>
+          <tr><td class="num">1024</td><td class="num">1</td><td class="num">0</td><td>正 tie，向上</td></tr>
+          <tr><td class="num">−1024</td><td class="num">0</td><td class="num">−1</td><td>负 tie，向 +∞（不是远离零）</td></tr>
+          <tr><td class="num">1023</td><td class="num">0</td><td class="num">0</td><td>不到半个 LSB</td></tr>
+          <tr><td class="num">3072</td><td class="num">2</td><td class="num">1</td><td>1.5 LSB → 2</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p>饱和逻辑在主配置下几乎撞不到：NCO 输出限幅在 ±2047，顶层 <code>OW=13</code> 离边界很远。所以 TB 里专门例化了一个 <code>OW=8</code> 的实例，验证 <code>+2047 → +127</code>、<code>−2048 → −128</code>，而不是靠主配置去撞。</p>
+
+    <h3 id="conj">CONJ 的写法</h3>
+    <div class="code">
+      <div class="code-head"><b>rtl/mixer.v</b><span>共轭 = 两路都翻，不是只翻一路</span></div>
+<pre><span class="c">// 上变频：e^{+jφ}</span>
+i_sum = i_cos - q_sin;
+q_sum = i_sin + q_cos;
+
+<span class="c">// 下变频：e^{-jφ}，等价于本振取共轭</span>
+<span class="k">if</span> (CONJ) <span class="k">begin</span>
+    i_sum = i_cos + q_sin;
+    q_sum = q_cos - i_sin;
+<span class="k">end</span></pre>
+    </div>
+    <p>写成“两路都翻”而不是“只翻 q”，是这一节最值得记住的实现细节。共轭作用于整个复数本振 <code>cos + j sin → cos − j sin</code>，交叉项因此同时变号；只改一路会得到一个既不是上变频也不是下变频的怪东西。</p>
+
+    <h3 id="evidence">验证：三层证据</h3>
+    <div class="table-wrap">
+      <table class="data">
+        <thead><tr><th>层</th><th>手段</th><th>抓什么</th><th>结果</th></tr></thead>
+        <tbody>
+          <tr><td>① 向量回放</td><td>Python 任意精度整数模型生成 4 组 × 1620 用例，TB 逐拍比对</td><td>位宽、符号扩展、舍入、饱和</td><td>全对</td></tr>
+          <tr><td>② 性质断言</td><td>单位幅度本振扫 32 个相位，检查 <code>i²+q²</code></td><td>“整体尺度错 2 倍”这类错</td><td>偏差 ≤ <b>8 LSB</b></td></tr>
+          <tr><td>③ 边界手算</td><td><code>cos=0, sin=64, i=q=64</code>；<code>+90°</code> 输入 <code>(2047,0)</code></td><td>CONJ 方向、tie、饱和</td><td>逐条对上</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p>算术级 TB <strong>45 个检查点</strong>，板级 TB <strong>24 个</strong>。两个 TB 的判据强度不同：顶层默认参数下输出幅度只有 2047，离饱和边界很远，舍入的影响只有 ±1 LSB，所以 M1（去舍入）/M2（饱和改回绕）在顶层抓不到——这不是重复劳动，而是“算术级”和“系统级”各自该抓的东西不同。</p>
+
+    <h3 id="board">上板：两个方向都验了</h3>
+    <p>板级实验台用<strong>第二个 NCO</strong> 造复单音输入（<code>I=cos, Q=sin</code>，即 <code>e<sup>jω<sub>in</sub>t</sup></code>），第一个 NCO 做本振。这样板上立刻有东西可混，判据是频率，一眼能核。</p>
+    <div class="table-wrap">
+      <table class="data">
+        <thead><tr><th>项</th><th>实测</th></tr></thead>
+        <tbody>
+          <tr><td>下变频输出</td><td><code>i_out</code> 周期 <b>1000</b> 点 → 50 kHz；输入 <b>200</b> 点 → 250 kHz，比例 <b>5:1</b></td></tr>
+          <tr><td>上变频输出</td><td><code>CONJ=0</code> 后约 <b>73</b> 个周期/窗口 → 450 kHz</td></tr>
+          <tr><td>资源（纯设计）</td><td><b>129 LUT / 92 Reg / 6 BRAM / 4 DSP</b>（含两个 NCO 表）</td></tr>
+          <tr><td>含 ILA</td><td>1464 LUT / 2416 Reg / 23 BRAM；WNS <b>+5.697 ns</b></td></tr>
+          <tr><td>CSV 逐点对账</td><td>两组 capture 各 <b>8,191 / 8,191</b> 点，按上一拍输入复算 <b>0 LSB</b></td></tr>
+        </tbody>
+      </table>
+    </div>
+    <div class="callout blue">
+      <span class="tag">对照上板波形</span>
+      <p>截图与读图约定在 <a href="showcase.html#s02">上板展示 · s02 Mixer</a>。注意看 50 kHz 输出与 250 kHz 输入的比例，以及 450 kHz 上变频那一版的周期数。</p>
+    </div>
+
+    <h3 id="pitfalls">踩过的坑：参考模型也会犯同一个错</h3>
+    <div class="callout warn">
+      <span class="tag">M3 · 最值得记住</span>
+      <p>下变频只翻了 q 一路。RTL 错了，Python 参考模型也错了同一个地方，于是向量回放<strong>全绿</strong>——自己证明自己。最后是边界手算 <code>cos=0, sin=64, i=q=64</code> 把真 bug 揪出来的。教训：<strong>参考模型和 RTL 不能由同一个理解盲区写出来</strong>；必须有一层人能一眼核对的边界用例。</p>
+    </div>
+    <ul>
+      <li><strong>提前截中间结果</strong>：省不下乘法器，只会白丢精度，还让“哪一位代表什么”变难查。先全精度，最后才截。</li>
+      <li><strong>舍入/saturation 在顶层 TB 里不可见</strong>：不是测试没写，而是主配置离边界太远。要给边界单独例化一个小位宽实例。</li>
+      <li><strong>4 个 DSP 正好对应 4 个 12×12 乘法器</strong>；如果综合出来是 8 个，先查是不是 <code>CONJ</code> 被写成了两套独立乘法。</li>
+    </ul>
+
+    <div class="takeaways" id="takeaways">
+      <h3>如果只记三件事</h3>
+      <ol>
+        <li><b>实数混频必然产生和频 + 差频</b>；复数混频用 I/Q 区分正负频率，一次复乘只搬一个方向。</li>
+        <li><b>共轭是“两路都翻”</b>——<code>i·cos + q·sin</code> 与 <code>q·cos − i·sin</code>，只翻 q 是错的。</li>
+        <li><b>定点乘法把尺度平方</b>，所以右移 <code>AW−1</code> 恢复单位增益；先全精度、再舍入、最后饱和。</li>
+      </ol>
+    </div>
+
+    <nav class="pager" aria-label="上一篇 / 下一篇">
+      <a href="s01.html"><span class="dir">← 上一篇</span><span class="ttl">s01 · NCO：让角度匀速转</span></a>
+      <a class="next" href="s03.html"><span class="dir">下一篇 →</span><span class="ttl">s03 · FIR：47 个抽头，一半的乘法器</span></a>
+    </nav>
+  </article>
+
+  <aside class="toc" aria-label="本页目录">
+    <p class="toc-title">本页目录</p>
+    <ol>
+      <li><a href="#principle">01 · 通信原理</a></li>
+      <li><a href="#real">实数混频的两份结果</a></li>
+      <li><a href="#complex">复数混频的单边带</a></li>
+      <li><a href="#math">I/Q 两路怎么算</a></li>
+      <li><a href="#negative">负频率与旋转方向</a></li>
+      <li><a href="#iq">正交误差与镜像</a></li>
+      <li><a href="#impl">02 · FPGA 实现</a></li>
+      <li><a href="#arch">四个乘法器</a></li>
+      <li><a href="#width">位宽与增益</a></li>
+      <li><a href="#round">舍入与饱和</a></li>
+      <li><a href="#conj">CONJ 的写法</a></li>
+      <li><a href="#evidence">验证证据</a></li>
+      <li><a href="#board">上板实测</a></li>
+      <li><a href="#pitfalls">踩过的坑</a></li>
+      <li><a href="#takeaways">记忆锚点</a></li>
+    </ol>
+    <div class="toc-foot">
+      <a href="showcase.html#s02">→ 看 s02 上板波形</a>
+      <a href="s01.html">← 上一篇：s01 NCO</a>
+      <a href="s03.html">→ 下一篇：s03 FIR</a>
+    </div>
+  </aside>
+</div>
+
+<footer class="site-foot">
+  <div class="wrap">
+    <div class="foot-id">
+      <span class="foot-mark">FC</span>
+      <div>
+        <p><b>Fernando Cheung</b> · FPGA / 基带数据通路</p>
+        <p>个人技术笔记 · 教学演示与技术分享</p>
+      </div>
+    </div>
+    <div>
+      <p>数据来源：<code>fpga-lab</code> 的 <code>s02_mixer/</code>、<code>logs/s02_mixer/</code>、<code>docs/学习备忘.md</code> 第 10 节。</p>
+      <div class="foot-links">
+        <a href="index.html">文章列表</a>
+        <a href="showcase.html">上板波形</a>
+        <a href="s03.html">下一篇 s03</a>
+      </div>
+    </div>
+  </div>
+</footer>
+
+</body>
+</html>
