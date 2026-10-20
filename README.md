@@ -1,5 +1,7 @@
 # fpga-showcase
 
+**最近更新**：2026-10-20 —— 新增 `s05.html`（DUC → DDC 回环），首页 `index.html` 已加入口。
+
 Fernando Cheung 的 FPGA 基带数据通路笔记站。纯静态页面，无构建步骤、无 CDN、无外部字体；直接打开 `index.html` 或部署到 GitHub Pages 即可。
 
 ## 页面结构
