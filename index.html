@@ -4,9 +4,9 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <meta name="color-scheme" content="dark">
-<meta name="description" content="FPGA 基带数据通路文章列表：s01 NCO、s02 复数混频、s03 FIR、s04 半带重采样四篇原理笔记，s05+s06 DUC/DDC 集成回环，以及 s01–s04 的 ILA 上板波形与 CSV 对账。作者 Fernando Cheung。">
+<meta name="description" content="FPGA 基带数据通路：s05+s06 整机 DUC/DDC 回环，s01–s04 四个零件的原理与单模块上板验证。一条回环，四张实验台。作者 Fernando Cheung。">
 <meta name="author" content="Fernando Cheung">
-<title>文章列表 · 从一只正弦到一条数据通路 | FPGA Showcase</title>
+<title>一条回环，四张实验台 | FPGA Showcase</title>
 <link rel="icon" href="assets/favicon.svg" type="image/svg+xml">
 <meta name="theme-color" content="#050b0d">
 <link rel="stylesheet" href="assets/site.css">
@@ -24,9 +24,9 @@
       <a href="s01.html">01 NCO</a>
       <a href="s02.html">02 混频</a>
       <a href="s03.html">03 FIR</a>
-      <a href="s04.html">04 重采样</a>
-      <a href="s05.html">05+06 DUC/DDC</a><span class="sep"></span>
-      <a href="showcase.html">上板波形</a>
+      <a href="s04.html">04 半带</a><span class="sep"></span>
+      <a href="s05.html">05+06 整机</a>
+      <a href="showcase.html">零件验证</a>
     </nav>
   </div>
 </header>
@@ -34,13 +34,14 @@
 <section class="home-hero">
   <div class="wrap">
     <p class="eyebrow">FPGA SHOWCASE · s01–s06 · 2026.10</p>
-    <h1>把一条数据通路，<br><em>拆成六篇文章。</em></h1>
-    <p class="lede">这不是一份教程目录，而是一条 5G 基带链路的复健记录。四篇原理笔记分别讲 NCO、复数混频、FIR 和半带重采样；第五篇把四个零件接成 DUC → DDC 回环，回答“接起来以后还对不对”。每篇都分成<strong>原理</strong>与<strong>FPGA 实现</strong>两半；另有一篇把 s01–s04 的真实 ILA 波形和五份 CSV 逐点对账。</p>
+    <h1>先看一条回环，<br><em>再拆四个零件。</em></h1>
+    <p class="lede">一条整机（s05+s06）把 500 kHz 搬到 3 MHz，再搬回 500 kHz；四张零件实验台（s01–s04）分别验证 NCO、复数混频、FIR 和半带。两条阅读线：想先看结果，从整机开始；想补基础，从零件开始。</p>
     <div class="meta">
-      <span class="chip"><span class="dot"></span><b>6</b> 个独立验证的 stage</span>
+      <span class="chip"><span class="dot"></span><b>1</b> 条整机回环</span>
+      <span class="chip"><b>4</b> 张零件实验台</span>
       <span class="chip"><b>8</b> 张 ILA · <b>7</b> 份 CSV</span>
       <span class="chip">XC7A100T · <b>50 MHz</b></span>
-      <span class="chip">仿真 + 上板 + ILA <b>三闭环</b></span>
+      <span class="chip">全仓库 <b>538</b> 检查点</span>
     </div>
     <div class="home-rule"></div>
   </div>
@@ -48,85 +49,119 @@
 
 <main class="wrap">
 
-  <a class="feature" href="showcase.html" aria-label="阅读 s01–s04 上板波形展示">
-    <div class="feature-main">
-      <span class="flag">BOARD NOTES · 先看结果</span>
-      <h2>从一只正弦，到一条数据通路。</h2>
-      <p>同一个 50 MHz 时钟、同一个 8192 点 ILA 窗口，加上五份逐点 CSV：正弦能不能干净地产生、频率能不能正确地搬移、47 抽头的 FIR 是不是真的按系数表在算、2× 重采样能不能在不破坏信号的前提下换掉采样率。</p>
-      <div class="feature-meta">
-        <span>6 张 ILA</span><span>8192 点 × 20 ns</span><span>CSV 逐点对账</span><span>0 LSB 误差</span>
+  <div class="feature-pair">
+
+    <a class="feature" href="s05.html" aria-label="阅读 s05+s06 整机 DUC/DDC 回环">
+      <div class="feature-main">
+        <span class="flag">INTEGRATION · 整机回环</span>
+        <h2>把四个零件，接成一条回环。</h2>
+        <p>500 kHz 搬上 3 MHz，再搬回 500 kHz：位宽链、LO_DLY 14/23、2:1 并串定帧，以及 6:1、I/Q 正交 90°、152 DSP 的板上证据。这是“集大成者”的那一篇。</p>
+        <div class="feature-meta">
+          <span>3 MHz → 500 kHz</span><span>6:1</span><span>152 DSP</span><span>WNS 6.390 ns</span>
+        </div>
+        <span class="go">进入整机回环 →</span>
       </div>
-      <span class="go">进入上板波形 →</span>
-    </div>
-    <div class="feature-visual" aria-hidden="true">
-      <svg viewBox="0 0 380 300" xmlns="http://www.w3.org/2000/svg">
-        <defs>
-          <linearGradient id="trace" x1="0" y1="0" x2="1" y2="0">
-            <stop offset="0" stop-color="#6cf0b0" stop-opacity=".25"/>
-            <stop offset=".55" stop-color="#6cf0b0" stop-opacity=".95"/>
-            <stop offset="1" stop-color="#ffc768" stop-opacity=".9"/>
-          </linearGradient>
-          <linearGradient id="fade" x1="0" y1="0" x2="0" y2="1">
-            <stop offset="0" stop-color="#6cf0b0" stop-opacity=".16"/>
-            <stop offset="1" stop-color="#6cf0b0" stop-opacity="0"/>
-          </linearGradient>
-        </defs>
-        <g stroke="#85b8b2" stroke-opacity=".12">
-          <path d="M0 60H380M0 110H380M0 160H380M0 210H380M0 260H380"/>
-          <path d="M40 24V276M110 24V276M180 24V276M250 24V276M320 24V276"/>
-        </g>
-        <path d="M0 245 C 22 245, 28 170, 50 170 S 78 245, 100 245 S 128 170, 150 170 S 178 245, 200 245 S 228 170, 250 170 S 278 245, 300 245 S 328 170, 350 170 S 378 245, 380 245" fill="none" stroke="#7bc8ff" stroke-opacity=".3" stroke-width="1.4"/>
-        <path d="M0 210 C 30 210, 35 120, 62 120 S 95 210, 122 210 S 155 120, 182 120 S 215 210, 242 210 S 275 120, 302 120 S 335 210, 362 210 S 378 190, 380 190" fill="none" stroke="url(#trace)" stroke-width="2.2"/>
-        <path d="M0 210 C 30 210, 35 120, 62 120 S 95 210, 122 210 S 155 120, 182 120 S 215 210, 242 210 S 275 120, 302 120 S 335 210, 362 210 S 378 190, 380 190 L380 300 L0 300 Z" fill="url(#fade)"/>
-        <g fill="#6cf0b0" font-family="ui-monospace,Menlo,monospace" font-size="9" letter-spacing="1">
-          <text x="14" y="30">S01</text><text x="95" y="30">S02</text><text x="176" y="30">S03</text><text x="257" y="30">S04</text>
-        </g>
-        <g fill="#5d7774" font-family="ui-monospace,Menlo,monospace" font-size="8">
-          <text x="14" y="42">NCO</text><text x="95" y="42">MIXER</text><text x="176" y="42">FIR</text><text x="257" y="42">2× HB</text>
-        </g>
-        <g fill="#ffc768" font-family="ui-monospace,Menlo,monospace" font-size="8">
-          <text x="14" y="286">8192 pts</text><text x="298" y="286">20 ns / pt</text>
-        </g>
-      </svg>
-      <span class="stamp">6 × ILA · CSV VERIFIED</span>
-    </div>
-  </a>
+      <div class="feature-visual" aria-hidden="true">
+        <svg viewBox="0 0 380 300" xmlns="http://www.w3.org/2000/svg">
+          <defs>
+            <pattern id="loop-fast" width="20" height="56" patternUnits="userSpaceOnUse" x="0" y="57">
+              <path d="M0 28 C 3 0, 7 0, 10 28 S 17 56, 20 28" fill="none" stroke="#6cf0b0" stroke-width="2"/>
+            </pattern>
+            <linearGradient id="loop-slow" x1="0" y1="0" x2="1" y2="0">
+              <stop offset="0" stop-color="#7bc8ff" stop-opacity=".35"/>
+              <stop offset=".55" stop-color="#7bc8ff" stop-opacity=".9"/>
+              <stop offset="1" stop-color="#ffc768" stop-opacity=".9"/>
+            </linearGradient>
+          </defs>
+          <g stroke="#85b8b2" stroke-opacity=".12">
+            <path d="M0 60H380M0 110H380M0 160H380M0 210H380M0 260H380"/>
+            <path d="M40 24V276M110 24V276M180 24V276M250 24V276M320 24V276"/>
+          </g>
+          <rect x="0" y="57" width="380" height="56" fill="url(#loop-fast)"/>
+          <path d="M0 225 C 10 197, 30 197, 40 225 S 70 253, 80 225 S 110 197, 120 225 S 150 253, 160 225 S 190 197, 200 225 S 230 253, 240 225 S 270 197, 280 225 S 310 253, 320 225 S 350 197, 360 225 S 378 245, 380 225" fill="none" stroke="url(#loop-slow)" stroke-width="2.2"/>
+          <g stroke="#ffc768" stroke-width="1.6" fill="none">
+            <path d="M70 205 L70 135"/><path d="M64 145 L70 133 L76 145"/>
+            <path d="M310 135 L310 205"/><path d="M304 195 L310 207 L316 195"/>
+          </g>
+          <g fill="#6cf0b0" font-family="ui-monospace,Menlo,monospace" font-size="9" letter-spacing="1">
+            <text x="14" y="30">3 MHz</text>
+            <text x="14" y="278">500 kHz</text>
+            <text x="300" y="278">500 kHz</text>
+          </g>
+          <g fill="#ffc768" font-family="ui-monospace,Menlo,monospace" font-size="8">
+            <text x="85" y="150">DUC ↑</text>
+            <text x="232" y="150">DDC ↓</text>
+            <text x="168" y="150">6:1</text>
+          </g>
+          <g fill="#5d7774" font-family="ui-monospace,Menlo,monospace" font-size="8">
+            <text x="14" y="42">MIXER @ 0.05 Fs</text>
+          </g>
+        </svg>
+        <span class="stamp">DUC → DDC · 6:1 VERIFIED</span>
+      </div>
+    </a>
+
+    <a class="feature feature-parts" href="showcase.html" aria-label="阅读 s01–s04 零件级上板验证">
+      <div class="feature-main">
+        <span class="flag">BOARD NOTES · 零件级验证</span>
+        <h2>四个零件，四张实验台。</h2>
+        <p>NCO、混频、FIR、半带，每个模块单独上板；用 ILA + CSV 回答一个具体问题：正交不正交、搬没搬对、系数表对不对、换采样率有没有混叠。这里是“每个零件自己跑起来”的原始证据。</p>
+        <div class="feature-meta">
+          <span>4 个实验台</span><span>6 张 ILA</span><span>5 份 CSV</span><span>逐点对账</span>
+        </div>
+        <span class="go">进入零件验证 →</span>
+      </div>
+      <div class="feature-visual" aria-hidden="true">
+        <svg viewBox="0 0 380 300" xmlns="http://www.w3.org/2000/svg">
+          <defs>
+            <linearGradient id="trace" x1="0" y1="0" x2="1" y2="0">
+              <stop offset="0" stop-color="#6cf0b0" stop-opacity=".25"/>
+              <stop offset=".55" stop-color="#6cf0b0" stop-opacity=".95"/>
+              <stop offset="1" stop-color="#ffc768" stop-opacity=".9"/>
+            </linearGradient>
+            <linearGradient id="fade" x1="0" y1="0" x2="0" y2="1">
+              <stop offset="0" stop-color="#6cf0b0" stop-opacity=".16"/>
+              <stop offset="1" stop-color="#6cf0b0" stop-opacity="0"/>
+            </linearGradient>
+          </defs>
+          <g stroke="#85b8b2" stroke-opacity=".12">
+            <path d="M0 60H380M0 110H380M0 160H380M0 210H380M0 260H380"/>
+            <path d="M40 24V276M110 24V276M180 24V276M250 24V276M320 24V276"/>
+          </g>
+          <path d="M0 245 C 22 245, 28 170, 50 170 S 78 245, 100 245 S 128 170, 150 170 S 178 245, 200 245 S 228 170, 250 170 S 278 245, 300 245 S 328 170, 350 170 S 378 245, 380 245" fill="none" stroke="#7bc8ff" stroke-opacity=".3" stroke-width="1.4"/>
+          <path d="M0 210 C 30 210, 35 120, 62 120 S 95 210, 122 210 S 155 120, 182 120 S 215 210, 242 210 S 275 120, 302 120 S 335 210, 362 210 S 378 190, 380 190" fill="none" stroke="url(#trace)" stroke-width="2.2"/>
+          <path d="M0 210 C 30 210, 35 120, 62 120 S 95 210, 122 210 S 155 120, 182 120 S 215 210, 242 210 S 275 120, 302 120 S 335 210, 362 210 S 378 190, 380 190 L380 300 L0 300 Z" fill="url(#fade)"/>
+          <g fill="#6cf0b0" font-family="ui-monospace,Menlo,monospace" font-size="9" letter-spacing="1">
+            <text x="14" y="30">S01</text><text x="95" y="30">S02</text><text x="176" y="30">S03</text><text x="257" y="30">S04</text>
+          </g>
+          <g fill="#5d7774" font-family="ui-monospace,Menlo,monospace" font-size="8">
+            <text x="14" y="42">NCO</text><text x="95" y="42">MIXER</text><text x="176" y="42">FIR</text><text x="257" y="42">2× HB</text>
+          </g>
+          <g fill="#ffc768" font-family="ui-monospace,Menlo,monospace" font-size="8">
+            <text x="14" y="286">8192 pts</text><text x="298" y="286">20 ns / pt</text>
+          </g>
+        </svg>
+        <span class="stamp">4 × BENCH · CSV VERIFIED</span>
+      </div>
+    </a>
+
+  </div>
 
   <div class="section-head">
     <div>
-      <p class="eyebrow" style="margin:0 0 8px">NOTES · 原理与集成</p>
+      <p class="eyebrow" style="margin:0 0 8px">PARTS · 四个零件</p>
       <h2>每个零件，先讲原理，再讲怎么落到 FPGA</h2>
     </div>
-    <p>按 stage 倒序排列 · 第一次读建议从 s01 开始</p>
+    <p>按搭建顺序排列 · 想先看整机可以跳过</p>
   </div>
 
   <div class="post-list">
-    <a class="post" href="s05.html">
-      <div class="post-top"><span class="post-no">05</span><span class="post-tag">S05+S06 · 集成 · 上板</span></div>
-      <h3>DUC → DDC：把四个零件接成一条回环</h3>
-      <p>成型、搬频、插值、抽取，四个零件各自都对，接起来仍会“频率对、相位错”。这一篇讲位宽链、LO_DLY 的 14/23、2:1 并串的定帧，以及板上 3 MHz → 500 kHz 的 6:1 证据。</p>
+    <a class="post" href="s01.html">
+      <div class="post-top"><span class="post-no">01</span><span class="post-tag">通信原理 · FPGA 实现</span></div>
+      <h3>NCO：让角度匀速转，正弦就自己长出来</h3>
+      <p>一个加法器加一块 ROM。相位累加器用二进制回绕代替归零比较；32 位相位管频率精度，12 位查表管波形纯度。sin²+cos² 全窗偏差 2,591，判据 4,096。</p>
       <div class="post-foot">
-        <span class="keys"><b>76+152</b> DSP · <b>6:1</b> · <b>90.00°</b></span>
-        <span class="arrow">→</span>
-      </div>
-    </a>
-
-    <a class="post" href="s04.html">
-      <div class="post-top"><span class="post-no">04</span><span class="post-tag">通信原理 · FPGA 实现</span></div>
-      <h3>半带重采样：61 个抽头，15 个乘法器</h3>
-      <p>插值先塞零再滤波，抽取先滤波再扔点。半带让偶相退化成 0.5·z<sup>−15</sup>，30 个奇系数对称成 15 对；两个 SHIFT 差的那一位，就是插值的 ×2。</p>
-      <div class="post-foot">
-        <span class="keys"><b>15</b> mult · <b>53.1</b> dB · <b>30</b> DSP</span>
-        <span class="arrow">→</span>
-      </div>
-    </a>
-
-    <a class="post" href="s03.html">
-      <div class="post-top"><span class="post-no">03</span><span class="post-tag">通信原理 · FPGA 实现</span></div>
-      <h3>FIR 低通：47 个抽头，只有一半需要乘法器</h3>
-      <p>冲激响应就是系数表；系数对称白送线性相位，又把 47 个乘法器折叠成 24 个。Q1.15、系数和 = 32768、四级流水，最后在 ILA 上和系数表逐点对上。</p>
-      <div class="post-foot">
-        <span class="keys"><b>24</b> mult · <b>55.7</b> dB · <b>23</b> 拍群延迟</span>
+        <span class="keys"><b>32</b> 位相位 · <b>4096</b> 项表 · <b>−0.069</b> ppm</span>
         <span class="arrow">→</span>
       </div>
     </a>
@@ -141,20 +176,41 @@
       </div>
     </a>
 
-    <a class="post" href="s01.html">
-      <div class="post-top"><span class="post-no">01</span><span class="post-tag">通信原理 · FPGA 实现</span></div>
-      <h3>NCO：让角度匀速转，正弦就自己长出来</h3>
-      <p>一个加法器加一块 ROM。相位累加器用二进制回绕代替归零比较；32 位相位管频率精度，12 位查表管波形纯度。sin²+cos² 全窗偏差 2,591，判据 4,096。</p>
+    <a class="post" href="s03.html">
+      <div class="post-top"><span class="post-no">03</span><span class="post-tag">通信原理 · FPGA 实现</span></div>
+      <h3>FIR 低通：47 个抽头，只有一半需要乘法器</h3>
+      <p>冲激响应就是系数表；系数对称白送线性相位，又把 47 个乘法器折叠成 24 个。Q1.15、系数和 = 32768、四级流水，最后在 ILA 上和系数表逐点对上。</p>
       <div class="post-foot">
-        <span class="keys"><b>32</b> 位相位 · <b>4096</b> 项表 · <b>−0.069</b> ppm</span>
+        <span class="keys"><b>24</b> mult · <b>55.7</b> dB · <b>23</b> 拍群延迟</span>
+        <span class="arrow">→</span>
+      </div>
+    </a>
+
+    <a class="post" href="s04.html">
+      <div class="post-top"><span class="post-no">04</span><span class="post-tag">通信原理 · FPGA 实现</span></div>
+      <h3>半带重采样：61 个抽头，15 个乘法器</h3>
+      <p>插值先塞零再滤波，抽取先滤波再扔点。半带让偶相退化成 0.5·z<sup>−15</sup>，30 个奇系数对称成 15 对；两个 SHIFT 差的那一位，就是插值的 ×2。</p>
+      <div class="post-foot">
+        <span class="keys"><b>15</b> mult · <b>53.1</b> dB · <b>30</b> DSP</span>
         <span class="arrow">→</span>
       </div>
     </a>
   </div>
 
   <section class="path">
-    <h2>推荐阅读路径</h2>
-    <p>想先建立直觉：按 s01 → s04 顺着读；想先看板上结果：从上板波形开始，再回到对应原理。</p>
+    <h2>两条阅读线</h2>
+    <p>同一批内容，两种走法；“原始证据”在两条线的终点。</p>
+
+    <p class="path-line-label">LINE A · 结果优先</p>
+    <div class="path-track">
+      <a class="path-node" href="s05.html"><span class="step">整机 · 05+06</span><b>DUC / DDC</b><small>3 MHz → 500 kHz</small></a>
+      <span class="path-arrow">→</span>
+      <a class="path-node" href="s01.html"><span class="step">零件 · s01–s04</span><b>需要时回看</b><small>NCO / 混频 / FIR / 半带</small></a>
+      <span class="path-arrow">→</span>
+      <a class="path-node" href="showcase.html"><span class="step">证据 · s01–s04</span><b>零件验证</b><small>ILA + CSV 对账</small></a>
+    </div>
+
+    <p class="path-line-label">LINE B · 学习优先</p>
     <div class="path-track">
       <a class="path-node" href="s01.html"><span class="step">STAGE 01</span><b>NCO</b><small>相位 + 查表</small></a>
       <span class="path-arrow">→</span>
@@ -164,16 +220,16 @@
       <span class="path-arrow">→</span>
       <a class="path-node" href="s04.html"><span class="step">STAGE 04</span><b>半带重采样</b><small>换采样率</small></a>
       <span class="path-arrow">→</span>
-      <a class="path-node" href="s05.html"><span class="step">STAGE 05+06</span><b>DUC / DDC</b><small>接成回环</small></a>
+      <a class="path-node" href="s05.html"><span class="step">STAGE 05+06</span><b>整机回环</b><small>接成一条链</small></a>
       <span class="path-arrow">→</span>
-      <a class="path-node" href="showcase.html"><span class="step">BOARD</span><b>上板波形</b><small>ILA + CSV 对账</small></a>
+      <a class="path-node" href="showcase.html"><span class="step">证据 · s01–s04</span><b>零件验证</b><small>ILA + CSV 对账</small></a>
     </div>
   </section>
 
   <div class="stat-row">
-    <div class="stat"><b>6</b><span>独立验证的 stage</span></div>
-    <div class="stat"><b>538</b><span>全仓库检查点</span></div>
-    <div class="stat"><b>152 <small>DSP</small></b><span>DUC + DDC 回环</span></div>
+    <div class="stat"><b>1</b><span>条整机回环</span></div>
+    <div class="stat"><b>4</b><span>张零件实验台</span></div>
+    <div class="stat"><b>152 <small>DSP</small></b><span>整机 DUC + DDC</span></div>
     <div class="stat"><b>6:1</b><span>3 MHz → 500 kHz</span></div>
   </div>
 
@@ -189,14 +245,14 @@
       </div>
     </div>
     <div>
-      <p>平台：Xilinx Artix-7 XC7A100T · 50 MHz · Vivado 2020.2。原理页数据来自 <code>fpga-lab</code> 的 TASK、仿真与上板记录。</p>
+      <p>平台：Xilinx Artix-7 XC7A100T · 50 MHz · Vivado 2020.2。整机与零件数据来自 <code>fpga-lab</code> 的 TASK、仿真与上板记录。</p>
       <div class="foot-links">
-        <a href="showcase.html">上板波形</a>
+        <a href="s05.html">整机 s05+s06</a>
         <a href="s01.html">s01 NCO</a>
         <a href="s02.html">s02 混频</a>
         <a href="s03.html">s03 FIR</a>
-        <a href="s04.html">s04 重采样</a>
-        <a href="s05.html">s05+s06 DUC/DDC</a>
+        <a href="s04.html">s04 半带</a>
+        <a href="showcase.html">零件验证</a>
       </div>
     </div>
   </div>

@@ -6,9 +6,9 @@
 <meta name="color-scheme" content="dark">
 <meta name="theme-color" content="#050b0d">
 <link rel="icon" href="assets/favicon.svg" type="image/svg+xml">
-<meta name="description" content="FPGA 基带数据通路 s01–s04 的 ILA 上板波形与 CSV 对账笔记：100 kHz NCO、复数混频的和频/差频、47 抽头 FIR、2× 半带插值/抽取。作者 Fernando Cheung。">
+<meta name="description" content="FPGA 基带数据通路 s01–s04 的单模块上板验证：NCO、复数混频、47 抽头 FIR、2× 半带插值/抽取的 ILA 波形与 CSV 逐点对账。作者 Fernando Cheung。">
 <meta name="author" content="Fernando Cheung">
-<title>从一只正弦，到一条数据通路 · s01–s04 ILA + CSV 波形笔记</title>
+<title>四个零件，四张实验台 · s01–s04 单模块上板验证</title>
 <style>
 :root{
   --bg:#050b0d;
@@ -491,12 +491,12 @@ footer b{color:var(--muted);font-weight:500}
 <header class="hero">
   <div class="wrap">
     <div class="topline">
-      <a class="brand" href="index.html"><span class="brand-dot"></span>FPGA LAB · 文章列表 / BOARD NOTES</a>
+      <a class="brand" href="index.html"><span class="brand-dot"></span>FPGA LAB · 文章列表 / 零件验证</a>
       <div class="board">xc7a100tfgg484-2 · 50 MHz · Vivado 2020.2</div>
     </div>
 
-    <h1>从一只正弦，<br><span>到一条数据通路。</span></h1>
-    <p class="lede">s01–s04 的上板波形笔记。同一个 50 MHz 时钟、同一个 8192 点 ILA 窗口，再加上五份逐点 CSV，依次回答四个问题：正弦能不能干净地产生、频率能不能正确地搬移、47 抽头的 FIR 是不是真的按系数表在算，以及 2× 重采样能不能在不破坏信号的前提下换掉采样率。</p>
+    <h1>四个零件，<br><span>四张实验台。</span></h1>
+    <p class="lede">s01–s04 的单模块上板验证。每个 stage 单独搭实验台，用同一个 50 MHz 时钟、ILA 和逐点 CSV 回答一个具体问题：正弦正不正交、频率搬没搬对、47 抽头 FIR 是不是按系数表在算、2× 重采样有没有混叠。整机集成另见 <a href="s05.html" style="color:var(--green)">DUC / DDC 整机篇</a>。</p>
     <div class="meta">
       <span class="chip"><span class="dot"></span><b>6</b> 张 ILA + <b>5</b> 份 CSV</span>
       <span class="chip"><b>8192</b> 点 × 20 ns = <b>163.84 µs</b></span>
@@ -518,7 +518,7 @@ footer b{color:var(--muted);font-weight:500}
       </span>
     </div>
 
-    <div class="chain" aria-label="四个阶段的信号链">
+    <div class="chain" aria-label="四个阶段的单模块实验台">
       <a class="chain-node" href="#s01">
         <span class="step">STAGE 01</span>
         <span class="node-title">NCO · 正交本振</span>
@@ -543,7 +543,7 @@ footer b{color:var(--muted);font-weight:500}
         <span class="node-sub">插值 / 抽取 · 15 乘/方向<br>级联峰值 1991</span>
       </a>
     </div>
-    <p class="chain-note"><b>注意：</b>这里是 s01–s04 的四个实验台。真正的 DUC → DDC 集成已经在 s05+s06 完成：3 MHz 搬上去、500 kHz 搬下来，频率比 6:1、I/Q 正交 90.00°。见 <a href="s05.html" style="color:var(--green)">DUC / DDC 集成篇</a>。</p>
+    <p class="chain-note"><b>注意：</b>这里是 s01–s04 的四个零件实验台。整机 DUC → DDC 回环已经在 s05+s06 完成：3 MHz 搬上去、500 kHz 搬下来，频率比 6:1、I/Q 正交 90.00°。见 <a href="s05.html" style="color:var(--green)">DUC / DDC 整机篇</a>。</p>
 
     <div class="stats">
       <div class="stat"><b>4</b><span>独立验证的 stage</span></div>
@@ -560,7 +560,7 @@ footer b{color:var(--muted);font-weight:500}
     <a href="#s02"><span class="n">02</span>Mixer</a>
     <a href="#s03"><span class="n">03</span>FIR</a>
     <a href="#s04"><span class="n">04</span>Resampler</a>
-    <a href="s05.html"><span class="n">05</span>DUC/DDC</a>
+    <a href="s05.html"><span class="n">05</span>整机</a>
     <span class="spacer"></span>
     <a href="index.html">文章列表</a>
     <a href="#reading">读图约定</a>

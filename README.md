@@ -1,6 +1,6 @@
 # fpga-showcase
 
-**最近更新**：2026-10-20 —— 新增 `s05.html`（DUC → DDC 回环），首页 `index.html` 已加入口。
+**最近更新**：2026-10-20 —— 首页改成“双 Feature”：`s05.html`（整机 DUC → DDC 回环）+ `showcase.html`（零件级验证），下面再列 s01–s04 四篇原理页。
 
 Fernando Cheung 的 FPGA 基带数据通路笔记站。纯静态页面，无构建步骤、无 CDN、无外部字体；直接打开 `index.html` 或部署到 GitHub Pages 即可。
 
@@ -8,8 +8,8 @@ Fernando Cheung 的 FPGA 基带数据通路笔记站。纯静态页面，无构�
 
 | 文件 | 内容 |
 |---|---|
-| `index.html` | 文章列表（首页） |
-| `showcase.html` | s01–s04 上板展示：6 张 ILA 截图 + 5 份 CSV 逐点对账（原首页） |
+| `index.html` | 首页：两个大 Feature（整机 / 零件验证）+ s01–s04 四张原理卡 + 两条阅读线 |
+| `showcase.html` | **零件级验证**：s01–s04 四个单模块实验台，6 张 ILA 截图 + 5 份 CSV 逐点对账（原首页） |
 | `s01.html` | NCO 原理：相位累加器、查表、相位截断、正交本振 + FPGA 实现 |
 | `s02.html` | 复数混频原理：和频/差频、I/Q、CONJ、定点舍入饱和 + FPGA 实现 |
 | `s03.html` | FIR 原理：卷积、窗函数、线性相位、Q1.15 + FPGA 实现 |
@@ -17,7 +17,8 @@ Fernando Cheung 的 FPGA 基带数据通路笔记站。纯静态页面，无构�
 | `s05.html` | s05+s06 集成：DUC（FIR → 混频 → 2× 插值）→ DDC 回环、LO_DLY 14/23、2:1 并串定帧 + 上板 ILA |
 
 每篇原理页固定分成「通信原理」和「FPGA 实现」两部分，末尾是验证证据与记忆锚点；
-`s05.html` 是「集成篇」，重点在系统顺序、位宽/相位和上板波形。
+`s05.html` 是「整机篇」，重点在系统顺序、位宽/相位和上板波形；
+`showcase.html` 是「零件验证」，只回答“每个模块自己跑起来是什么样”。
 
 ## 目录
 
