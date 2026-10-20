@@ -12,14 +12,18 @@ Fernando Cheung 的 FPGA 基带数据通路笔记站。纯静态页面，无构�
 | `s02.html` | 复数混频原理：和频/差频、I/Q、CONJ、定点舍入饱和 + FPGA 实现 |
 | `s03.html` | FIR 原理：卷积、窗函数、线性相位、Q1.15 + FPGA 实现 |
 | `s04.html` | 2× 半带插值/抽取：镜像、半带约束、多相分解、抗混叠 + FPGA 实现 |
+| `s05.html` | s05+s06 集成：DUC（FIR → 混频 → 2× 插值）→ DDC 回环、LO_DLY 14/23、2:1 并串定帧 + 上板 ILA |
 
-每篇原理页固定分成「通信原理」和「FPGA 实现」两部分，末尾是验证证据与记忆锚点。
+每篇原理页固定分成「通信原理」和「FPGA 实现」两部分，末尾是验证证据与记忆锚点；
+`s05.html` 是「集成篇」，重点在系统顺序、位宽/相位和上板波形。
 
 ## 目录
 
 ```
 assets/site.css          共享样式（深色绿/琥珀，沿用原展示页配色）
 assets/img/*.svg         原理页图表（由真实系数生成）
+assets/img/s05-ila-duc.png  s05 DUC 上板 ILA 截图（1870×803）
+assets/img/s06-ila-ddc.png  s06 DUC→DDC 回环 ILA 截图（1339×810）
 assets/data/*.mem        从 fpga-lab 复制的系数表，供图表生成脚本读取
 assets/favicon.svg       favicon
 tools/make_figs.py       图表生成脚本（只依赖 numpy；输出 assets/img/*.svg）
@@ -37,6 +41,7 @@ python3 tools/make_figs.py
 
 ## 内容来源
 
-正文数字来自 `fpga-lab` 仓库的 `s01_nco/`–`s04_resample/` 任务书、`docs/进度.md`、
-`docs/学习备忘.md`，以及 2026-10-18/19 的 ILA 截图与 CSV。上板展示页保留原始
-base64 内嵌 PNG，单文件可离线打开。
+正文数字来自 `fpga-lab` 仓库的 `s01_nco/`–`s06_ddc/` 任务书、`docs/进度.md`、
+`docs/学习备忘.md`，以及 2026-10-18/19/20 的 ILA 截图与 CSV。
+`s05.html` 用的是 s05 / s06 的 ILA 截图；上板展示页保留原始 base64 内嵌 PNG，
+单文件可离线打开。

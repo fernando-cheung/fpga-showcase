@@ -1,0 +1,380 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="color-scheme" content="dark">
+<meta name="description" content="DUC / DDC 集成：FIR 成型 → 复数混频 → 2× 插值，2× 抽取 → 下变频 → 基带 FIR。s05/s06 的位宽链、LO_DLY 相位对齐、2:1 并串定帧，以及 3 MHz → 500 kHz（6:1）的 ILA 上板证据。">
+<meta name="author" content="Fernando Cheung">
+<title>s05 + s06 · DUC / DDC — 把四个零件接成一条回环 | FPGA Showcase</title>
+<link rel="icon" href="assets/favicon.svg" type="image/svg+xml">
+<meta name="theme-color" content="#050b0d">
+<link rel="stylesheet" href="assets/site.css">
+</head>
+<body>
+
+<header class="site-head">
+  <div class="wrap">
+    <a class="logo" href="index.html">
+      <span class="logo-mark">FC</span>
+      <span class="logo-text"><b>FPGA SHOWCASE</b><small>BASEBAND DATA PATH</small></span>
+    </a>
+    <nav class="site-nav" aria-label="站点导航">
+      <a href="index.html">文章列表</a><span class="sep"></span>
+      <a href="s01.html">01 NCO</a>
+      <a href="s02.html">02 混频</a>
+      <a href="s03.html">03 FIR</a>
+      <a href="s04.html">04 重采样</a>
+      <a class="active" href="s05.html">05+06 DUC/DDC</a><span class="sep"></span>
+      <a href="showcase.html">上板波形</a>
+    </nav>
+  </div>
+</header>
+
+<section class="page-hero">
+  <div class="wrap">
+    <div class="crumbs">
+      <a href="index.html">文章列表</a><span class="slash">/</span>
+      <span>s05 + s06 · DUC / DDC</span><span class="slash">/</span>
+      <span>集成 + 上板</span>
+    </div>
+    <h1>把四个零件，<br><em>接成一条回环。</em></h1>
+    <p class="lede">前四篇各讲一个零件：NCO 产生本振、混频器搬频率、FIR 选带、半带换采样率。这一篇讲的是<strong>把它们接起来</strong>：DUC 把 500 kHz 的单音搬到 3 MHz，DDC 再把它搬回 500 kHz。算法没有变，难的是位宽、增益、本振相位和流水延迟——任何一处错，频率都可能还是对的，但整条链已经歪了。</p>
+    <div class="meta">
+      <span class="chip"><span class="dot"></span><b>76 + 152</b> DSP</span>
+      <span class="chip"><b>3 MHz → 500 kHz</b> · 6:1</span>
+      <span class="chip">I/Q 正交 <b>90.00°</b></span>
+      <span class="chip">回环 step <b>+998 / 0</b></span>
+      <span class="chip">全仓库 <b>24/24 · 538</b> 检查点</span>
+    </div>
+    <div class="hero-rule"></div>
+  </div>
+</section>
+
+<div class="wrap article-layout">
+  <article class="prose article-body">
+
+    <div class="part-head" id="system">
+      <div class="part-no">01</div>
+      <div>
+        <p class="part-kicker">PART ONE · 系统</p>
+        <h2>一条链，两个方向</h2>
+      </div>
+      <span class="part-tag">INTEGRATION</span>
+    </div>
+
+    <h3 id="chain">DUC：把基带搬到低 IF</h3>
+    <p>DUC 的顺序是 <strong>成型 FIR → 复数混频 → 2× 半带插值</strong>。符号先经过 I/Q 两路 FIR 成型，再乘上 <code>e<sup>+jφ</sup></code> 搬到 <code>f<sub>lo</sub> = 0.05 Fs</code>，最后 2× 插值成两相，交给 DAC。</p>
+    <div class="flow">
+      <div class="flow-node"><span class="n">IN</span><b>I/Q 符号</b><small>Fs · 12 位</small></div>
+      <div class="flow-arrow">→</div>
+      <div class="flow-node"><span class="n">FIR ×2</span><b>成型滤波</b><small>47 抽头 · 13 位</small></div>
+      <div class="flow-arrow">→</div>
+      <div class="flow-node"><span class="n">MIXER</span><b>上变频</b><small>CONJ=0 · 14 位</small></div>
+      <div class="flow-arrow">→</div>
+      <div class="flow-node alt"><span class="n">INTERP ×2</span><b>2× 插值</b><small>两相 · 15 位</small></div>
+      <div class="flow-note">低 IF 约束：<b>f<sub>lo</sub> 必须落在 FIR 通带内</b>，且 f<sub>lo</sub> + 信号带宽 &lt; 0.10 Fs。本设计 0.05 + 0.01 = 0.06 Fs。</div>
+    </div>
+
+    <h3 id="ddc">DDC：反着走一遍</h3>
+    <p>DDC 是严格逆序：<strong>2× 半带抽取 → 复数混频（下变频）→ 基带 FIR</strong>。两相输入先降到 Fs，再乘 <code>e<sup>−jφ</sup></code> 搬回 0，最后用同一张 47 抽头表做信道滤波。</p>
+    <div class="flow">
+      <div class="flow-node"><span class="n">IN</span><b>两相 I/Q</b><small>2Fs · 15 位</small></div>
+      <div class="flow-arrow">→</div>
+      <div class="flow-node"><span class="n">DECIM ×2</span><b>2× 抽取</b><small>抗混叠 · 16 位</small></div>
+      <div class="flow-arrow">→</div>
+      <div class="flow-node"><span class="n">MIXER</span><b>下变频</b><small>CONJ=1 · 17 位</small></div>
+      <div class="flow-arrow">→</div>
+      <div class="flow-node alt"><span class="n">FIR ×2</span><b>基带信道</b><small>47 抽头 · 18 位</small></div>
+      <div class="flow-note">最后饱和到 <b>13 位</b>：12 位符号 + 1 位余量。整条链单位增益，回环 DC 增益实测 0.9975。</div>
+    </div>
+
+    <h3 id="order">为什么 FIR 一定在混频之前</h3>
+    <p>这是 s05 集成时改正的一个旧猜测。最初以为“先混频把频谱搬到 IF，再用低通切带外”，但真接起来会发现：<strong>成型滤波必须在基带做</strong>。</p>
+    <ul>
+      <li>混频之后再低通，滤波器的响应是 <code>H(f)</code>，不是 <code>H(f−f<sub>lo</sub>)</code>。它按低通的过渡带去削 <code>f<sub>lo</sub></code> 附近的信号，而不是按设计时看到的那条平坦通带。</li>
+      <li><code>f<sub>lo</sub></code> 取得很低（0.05 Fs）时“看起来还行”，换一个 IF 就露馅。</li>
+      <li>标准 DUC 就是<strong>成型（基带）→ 上变频 → 插值</strong>；DDC 反过来<strong>抽取 → 下变频 → 基带 FIR</strong>。</li>
+    </ul>
+    <div class="callout key">
+      <span class="tag">一句话</span>
+      <p><strong>滤波器只认它所在的那个频率位置。</strong>成型要在基带做，抗镜像/抗混叠要在换采样率的那一级做；混频只负责搬，不负责选带。</p>
+    </div>
+
+    <h3 id="width">位宽链：每一级的输出 = 下一级的输入</h3>
+    <div class="table-wrap">
+      <table class="data">
+        <thead><tr><th>级</th><th>DUC</th><th>DDC</th><th>怎么来的</th></tr></thead>
+        <tbody>
+          <tr><td>输入</td><td>12</td><td>15</td><td>DUC 输入符号 / DDC 输入 = DUC 插值输出</td></tr>
+          <tr><td>1</td><td><b>FIR 13</b></td><td><b>decim 16</b></td><td>单位增益，留 1 位余量</td></tr>
+          <tr><td>2</td><td><b>mixer 14</b></td><td><b>mixer 17</b></td><td>全精度乘加后舍入 + 饱和</td></tr>
+          <tr><td>3</td><td><b>interp 15</b></td><td><b>FIR 18</b></td><td>半带 / 47 抽头，单位增益</td></tr>
+          <tr><td>输出</td><td>15（两相）</td><td>13（饱和）</td><td>DUC 给 DAC / DDC 给基带</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p>两个容易踩的点：</p>
+    <ul>
+      <li><strong>中间不能截位。</strong>每一级的 <code>OW</code> 必须等于下一级的 <code>IW</code>；截回 12 位，随机信号会慢慢累积误差。</li>
+      <li><strong>14 位 mixer 是“刚好够”。</strong><code>2047 × 2047 × 2 &gt;&gt; 11 = 4092</code>，14 位正上界 8191；15 位 interp 则留了很大余量。把 interp 的 <code>IW</code> 从 14 改成 13，满幅单音下测不出来——截掉的是余量位，不是有效位。</li>
+    </ul>
+
+    <h3 id="latency">延迟与 LO 相位：集成时最容易错的两件事</h3>
+    <div class="table-wrap">
+      <table class="data">
+        <thead><tr><th>量</th><th>值</th><th>组成</th></tr></thead>
+        <tbody>
+          <tr><td>DUC 输入 → 输出</td><td><b>9 拍</b></td><td>FIR 4 + mixer 1 + interp 4</td></tr>
+          <tr><td>DDC 输入 → 输出</td><td><b>10 拍</b></td><td>decim 4 + mixer 1 + FIR 4 + <b>1 handoff</b></td></tr>
+          <tr><td>DUC → DDC 回环</td><td><b>19 拍</b></td><td>9 + 10</td></tr>
+          <tr><td><code>LO_DLY</code>（DUC）</td><td><b>4</b></td><td>本振跟 FIR 的 4 拍流水对齐</td></tr>
+          <tr><td><code>LO_DLY</code>（独立 DDC）</td><td><b>14</b></td><td>相位延迟 10 + handoff 4</td></tr>
+          <tr><td><code>LO_DLY</code>（回环 DDC）</td><td><b>23</b></td><td>14 + DUC 的 9 拍</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p>DDC 比“模块延迟相加”多 1 拍：decim 的输出在沿后更新，mixer 在<strong>下一个沿</strong>才读到它；mixer 到 FIR 同理。这个 handoff 在单模块 TB 里被 <code>LAT</code> 吸收了，集成时不算进去，整段向量会平移一拍——数值全对，位置全错。</p>
+
+    <div class="part-head" id="board">
+      <div class="part-no">02</div>
+      <div>
+        <p class="part-kicker">PART TWO · 上板</p>
+        <h2>3 MHz 搬上去，500 kHz 搬下来</h2>
+      </div>
+      <span class="part-tag">ILA</span>
+    </div>
+
+    <h3 id="howto">先学会看 ILA：只看周期，不看清零</h3>
+    <p>ILA 的横轴是<strong>采样点</strong>，不是时间。板子的采样时钟是 50 MHz，所以：</p>
+    <div class="eq">
+      <span class="eq-title">点与时间</span>
+      1 点 = 20 ns　　→　　f = 50 MHz / 一个周期的点数<br>
+      4096 点窗口 = 81.92 µs　　→　　100 点/周期 = 2 µs = <b>500 kHz</b>
+    </div>
+    <p>看波形时不用管每一拍的绝对值，只数<strong>一个周期占多少点</strong>。3 MHz 的周期是 333.3 ns，正好 <strong>16.667 点</strong>；500 kHz 的周期是 2 µs，正好 <strong>100 点</strong>。两者一比就是 6:1。</p>
+    <div class="table-wrap">
+      <table class="data">
+        <thead><tr><th>看什么</th><th>怎么算</th><th>本例</th></tr></thead>
+        <tbody>
+          <tr><td>频率</td><td>50 MHz ÷ 一个周期的点数</td><td>100 点 → <b>500 kHz</b>；16.667 点 → <b>3 MHz</b></td></tr>
+          <tr><td>频率比</td><td>两路周期之比</td><td>100 / 16.667 = <b>6.0000</b></td></tr>
+          <tr><td>正交</td><td>I/Q 两路的相位差</td><td><b>−90.00°</b></td></tr>
+          <tr><td>幅度</td><td>正弦峰值</td><td>约 <b>2042</b>（满幅 2047）</td></tr>
+          <tr><td>纯度</td><td>整窗拟合的残差 RMS</td><td>约 <b>1 LSB</b>（−66 dBc）</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <h3 id="duc-fig">DUC：下面 500 kHz，上面 3 MHz</h3>
+    <figure class="figure">
+      <div class="canvas">
+        <a href="assets/img/s05-ila-duc.png" target="_blank" rel="noopener"><img src="assets/img/s05-ila-duc.png" alt="s05 DUC 的 ILA 波形：tone_i/tone_q 是 500 kHz 输入，ie/io/qe/qo 是 3 MHz 输出四相" loading="lazy"></a>
+      </div>
+      <figcaption><span class="fig-label">图 1</span>s05 DUC 上板 ILA（4096 点，触发点 sample 2048）。<b>下面两条</b>是输入测试单音 <code>tone_i/tone_q</code>：500 kHz，100 点/周期；<b>上面四条</b>是 DUC 输出四相 <code>ie/io/qe/qo</code>：3 MHz，16.667 点/周期。两条时间轴完全一样，所以“上面更密”就是频率更高。点图看原尺寸。</figcaption>
+    </figure>
+    <p>这张图只回答三件事：</p>
+    <ol>
+      <li><strong>搬移成功</strong>：输出频率 3 MHz，不是 2 MHz（差频），说明混频用的是 <code>CONJ=0</code> 的和频；</li>
+      <li><strong>比例正确</strong>：3 MHz : 500 kHz = <strong>6.0000</strong>，正好 0.01 + 0.05；</li>
+      <li><strong>I/Q 正交</strong>：<code>ie</code> 与 <code>qe</code> 相位差 −90.01°，幅度都在 2042 附近，不是单路。</li>
+    </ol>
+
+    <h3 id="ddc-fig">DDC：上面 3 MHz，下面回到 500 kHz</h3>
+    <figure class="figure">
+      <div class="canvas">
+        <a href="assets/img/s06-ila-ddc.png" target="_blank" rel="noopener"><img src="assets/img/s06-ila-ddc.png" alt="s06 DUC→DDC 回环的 ILA 波形：上面四条是 3 MHz 的 DUC 输出，下面两条是 500 kHz 的回环输出" loading="lazy"></a>
+      </div>
+      <figcaption><span class="fig-label">图 2</span>s06 DUC → DDC 回环上板 ILA（4096 点，触发点 sample 2048）。<b>上面四条</b>是 DUC 输出 <code>ie/io/qe/qo</code>：3 MHz；<b>下面两条</b>是 DDC 回环输出 <code>di/dq</code>：500 kHz，100 点/周期。同一个窗口里，上面密、下面疏，频率比 <b>6:1</b>。点图看原尺寸。</figcaption>
+    </figure>
+    <p>这张图回答的是“搬上去还能不能搬回来”：</p>
+    <ul>
+      <li><code>di/dq</code> 回到 <strong>500.0 kHz</strong>，周期 100.000 点，和输入单音同频；</li>
+      <li><code>di</code> 与 <code>dq</code> 相位差 <strong>−90.00°</strong>，复包络纹波 <strong>0.08%</strong>；</li>
+      <li>回环增益 <strong>0.9975</strong>（−0.02 dB），幅度基本守恒；</li>
+      <li>LED0/LED1 常亮，LED2/LED3 1 Hz 心跳——板上肉眼也能确认链路活着。</li>
+    </ul>
+
+    <div class="table-wrap">
+      <table class="data">
+        <thead><tr><th>实测</th><th>s05 DUC</th><th>s06 回环</th></tr></thead>
+        <tbody>
+          <tr><td>输入单音</td><td>500.0 kHz · 2047</td><td>同左（DUC 输入）</td></tr>
+          <tr><td>DUC 输出</td><td>3.000 MHz · 2042.5 / 2042.2</td><td>3.000 MHz · 2042.2 / 2042.4</td></tr>
+          <tr><td>DDC 输出</td><td>—</td><td><b>500.0 kHz · 2037.1 / 2037.1</b></td></tr>
+          <tr><td>I/Q 相位差</td><td>−90.01°</td><td>−90.00°（回环输出）</td></tr>
+          <tr><td>频率比</td><td>6.0000</td><td>6.0000</td></tr>
+          <tr><td>资源 / 时序</td><td>76 DSP / 6 BRAM · WNS 2.704 ns</td><td>152 DSP / 9 BRAM · WNS 6.390 ns</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <div class="part-head" id="tax">
+      <div class="part-no">03</div>
+      <div>
+        <p class="part-kicker">PART THREE · 集成税</p>
+        <h2>两个“频率对、相位错”的坑</h2>
+      </div>
+      <span class="part-tag">PHASE</span>
+    </div>
+
+    <h3 id="lodly">LO_DLY：独立 DDC 是 14，回环是 23</h3>
+    <p>DDC 混频器要拿回 DUC 混频器<strong>当时用的那个本振相位</strong> <code>lo[n]</code>，再取共轭把它搬回 0。问题是数据不是“立刻”到 DDC 的：</p>
+    <ul>
+      <li>独立 DDC：数据在第 n 拍就到 DDC 输入，功能模型里需要 <code>lo[n−10]</code>；RTL 的延迟线长度 = <strong>10 + 4 = 14</strong>。这个 10 是 <strong>interp/decim 在 f<sub>lo</sub> 处的相位延迟</strong>，不是半带的群延迟 15。</li>
+      <li>回环：DUC 的输出比 DUC 输入晚 <strong>9 拍</strong>才到 DDC，所以 DDC 的本振也要多等 9 拍：<strong>14 + 9 = 23</strong>。</li>
+    </ul>
+    <div class="eq">
+      <span class="eq-title">相位延迟 ≠ 群延迟</span>
+      功能模型：lo[n−10]　→　RTL：10 + 4 = <b>14</b>（独立 DDC）<br>
+      回环：14 + DUC 9 = <b>23</b>（ddc_top 里的 LO_DLY_DDC）
+    </div>
+    <p>写成 14 会怎样？频率仍然是 500 kHz，幅度也基本不变，但 I/Q 整体旋转：</p>
+    <div class="eq">
+      <span class="eq-title">差 9 个样本的相位</span>
+      f<sub>lo</sub> = 0.05 Fs　→　每样本 18°　→　9 × 18° = <b>162°</b>
+    </div>
+    <p>step 场景（DC 1000 混上去再混下来）会从期望的 <strong>+998 / 0</strong> 变成大约 <strong>−949 / ±308</strong>：I 路几乎反相，Q 路从 0 变成几百。看频率完全看不出来。</p>
+    <div class="table-wrap">
+      <table class="data">
+        <thead><tr><th>DDC 的 LO 下标</th><th>step 输出</th><th>说明</th></tr></thead>
+        <tbody>
+          <tr><td>10（RTL 14）</td><td><b>+998 / 0</b></td><td>相位对</td></tr>
+          <tr><td>15（RTL 19）</td><td>0 / +998</td><td>差 90°</td></tr>
+          <tr><td>20（RTL 24）</td><td>−998 / 0</td><td>差 180°</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <div class="callout warn">
+      <span class="tag">板级 ILA 的盲区</span>
+      <p>回环里没有独立参考，<strong>把 23 写成 14 时，频率、幅度、正交性全都照样对</strong>，只是整条链旋转 90°。这块 ILA 证明不了绝对相位；绝对相位由 <code>tb_duc_ddc_loopback</code> 的逐位向量保证（step +998/0）。所以判据要分两层：<strong>ILA 看频率/幅度/正交，向量看绝对相位。</strong></p>
+    </div>
+
+    <h3 id="ser">2:1 并串：phase 计数器不能自由跑</h3>
+    <p>DUC 输出是两相并行的，接 1 路 DAC 前要并串。第一版写得很自然：在 <code>clk2x</code> 域里每个沿翻转 <code>ph</code>，<code>ph=0</code> 选偶相、<code>ph=1</code> 选奇相。仿真一跑，偶/奇相整体互换——<strong>频率全对，拼起来是废的</strong>。</p>
+    <p>原因不是算术，是<strong>定帧</strong>：<code>ph</code> 是 clk2x 域的计数器，它不知道 clk 域的“一帧”从哪开始；复位释放的时刻决定它先数到 0 还是 1。正确做法是用 <strong>clk 的上升沿</strong>给 <code>ph</code> 定帧：</p>
+    <div class="code">
+      <div class="code-head"><b>serializer2.v</b><span>用 clk 上升沿定帧</span></div>
+<pre><span class="c">// clk2x 域：clk 上升沿后的第一个沿 = 新的一帧</span>
+<span class="k">clk_d</span> &lt;= clk;
+<span class="k">if</span> (clk &amp; ~clk_d) <span class="k">begin</span>
+    e_r &lt;= d_e;
+    o_r &lt;= d_o;
+    d   &lt;= d_e;      <span class="c">// 先出偶相</span>
+<span class="k">end else begin</span>
+    d   &lt;= o_r;      <span class="c">// 同一帧的第二个沿出奇相</span>
+<span class="k">end</span></pre>
+    </div>
+    <p>接收端在 <code>negedge clk2x</code> 采（数据眼图中间），并用同样的 <code>clk &amp; ~clk_d</code> 定帧。<code>tb_serializer2</code> 用 32 对互不相同的值驱动，搜固定延迟后逐点比对，能同时抓“延迟错”和“偶/奇互换”。</p>
+    <p>这块没有进板级顶层：板上没有 DAC，也没有 2Fs 时钟。模块在 <code>rtl/common/</code>，等接 DAC 时再加 MMCM 和 2 倍时钟。</p>
+
+    <div class="part-head" id="evidence">
+      <div class="part-no">04</div>
+      <div>
+        <p class="part-kicker">PART FOUR · 证据</p>
+        <h2>24/24、538 个检查点，76 + 152 DSP</h2>
+      </div>
+      <span class="part-tag">VERIFIED</span>
+    </div>
+
+    <h3 id="tb">六层验证，最后一层是逐位回环</h3>
+    <div class="table-wrap">
+      <table class="data">
+        <thead><tr><th>层</th><th>手段</th><th>结果</th></tr></thead>
+        <tbody>
+          <tr><td>DUC 核心</td><td>整链向量 / 冲激 / 增益 / 正交 / 相位敏感 / 饱和 / 参数化</td><td><b>41</b> 个检查点</td></tr>
+          <tr><td>DUC 顶层</td><td>0.06 Fs 单音 / 幅度 / 心跳 / 异步复位</td><td><b>13</b> 个检查点</td></tr>
+          <tr><td>DDC 核心</td><td>整链向量 / step 相位 / tone 增益 / 饱和 / 参数化</td><td><b>37</b> 个检查点</td></tr>
+          <tr><td>回环</td><td>DUC → DDC：4 场景 × 512 样本 × I/Q <b>逐位一致</b></td><td><b>27</b> 个检查点</td></tr>
+          <tr><td>DDC 顶层</td><td>0.06 vs 0.01 Fs / 活动 LED / 心跳</td><td><b>17</b> 个检查点</td></tr>
+          <tr><td>并串</td><td>2:1 并串 → 1:2 串并，32 对逐点</td><td><b>10</b> 个检查点</td></tr>
+          <tr><td>反向验证</td><td>混频方向 / SHIFT / sin-cos / LED / 饱和 …</td><td><b>8 处变红</b> + 1 处“位宽截一位不红”</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p>全仓库 <code>make sim</code> <strong>24/24、538 个检查点</strong>，<code>make lint</code> <strong>19 个 RTL 文件无警告</strong>。反向验证里最值得记的一条：把 interp 的 <code>IW</code> 从 14 改成 13 <strong>没有变红</strong>——满幅单音峰值 2039 本来就在 13 位范围内，截掉的是余量位。要证明测试覆盖增益，得改 <code>SHIFT</code>（14→15，幅度减半），那会红 6 条。</p>
+
+    <h3 id="resource">资源与时序：WNS 是复位，不是算术</h3>
+    <div class="table-wrap">
+      <table class="data">
+        <thead><tr><th>指标</th><th>s05 DUC</th><th>s06 回环</th></tr></thead>
+        <tbody>
+          <tr><td>DSP48E1</td><td><b>76</b></td><td><b>152</b></td></tr>
+          <tr><td>Block RAM</td><td><b>6</b></td><td><b>9</b></td></tr>
+          <tr><td>纯设计 LUT / Reg</td><td>3346 / 4999</td><td>7642 / 6358</td></tr>
+          <tr><td>布局后 LUT / Reg（含 ILA）</td><td>4255 / 7350</td><td>8642 / 8717</td></tr>
+          <tr><td>WNS（整体）</td><td><b>2.704 ns</b></td><td><b>6.390 ns</b></td></tr>
+          <tr><td>数据通路 WNS</td><td><b>8.402 ns</b></td><td><b>7.606 ns</b></td></tr>
+          <tr><td>DRC</td><td>0 Errors / 1994 Warnings</td><td>0 Errors / 356 Warnings</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p>s05 的整体 WNS 只有 2.704 ns，看起来紧，但它属于 <code>async_default</code> 的<strong>异步复位 recovery</strong> 路径（96% 是布线）；纯数据通路还有 <strong>8.402 ns</strong>。s06 同理：整体 6.390 ns、数据通路 7.606 ns。这是 s03/s04 就验证过的读法——<strong>先看 path group，再看 worst path 的类型</strong>，别把 WNS 当算术余量。</p>
+
+    <div class="takeaways" id="takeaways">
+      <h3>如果只记三件事</h3>
+      <ol>
+        <li><b>成型在基带、上变频、插值；DDC 反过来。</b>混频后再低通，滤波器响应是 <code>H(f)</code> 而不是 <code>H(f−f<sub>lo</sub>)</code>，等于用错了一条曲线。</li>
+        <li><b>LO_DLY 不是模块固有参数，是“数据到混频器走了多久”。</b>独立 DDC 14、回环 23；写成 14 频率仍对，但 I/Q 旋转 162°——判据是 step +998/0。</li>
+        <li><b>ILA 证明频率/幅度/正交，逐位向量证明绝对相位。</b>回环没有独立参考，板级波形看不出 23 和 14 的差别；那 9 拍由 <code>tb_duc_ddc_loopback</code> 保证。</li>
+      </ol>
+    </div>
+
+    <nav class="pager" aria-label="上一篇 / 下一篇">
+      <a href="s04.html"><span class="dir">← 上一篇</span><span class="ttl">s04 · 半带重采样：61 抽头，15 个乘法器</span></a>
+      <a class="next" href="index.html"><span class="dir">返回 →</span><span class="ttl">文章列表</span></a>
+    </nav>
+  </article>
+
+  <aside class="toc" aria-label="本页目录">
+    <p class="toc-title">本页目录</p>
+    <ol>
+      <li><a href="#system">01 · 系统</a></li>
+      <li><a href="#chain">DUC 链</a></li>
+      <li><a href="#ddc">DDC 链</a></li>
+      <li><a href="#order">FIR 为什么在混频前</a></li>
+      <li><a href="#width">位宽链</a></li>
+      <li><a href="#latency">延迟与 LO 相位</a></li>
+      <li><a href="#board">02 · 上板</a></li>
+      <li><a href="#howto">怎么看 ILA</a></li>
+      <li><a href="#duc-fig">DUC 波形</a></li>
+      <li><a href="#ddc-fig">DDC 波形</a></li>
+      <li><a href="#tax">03 · 集成税</a></li>
+      <li><a href="#lodly">LO_DLY 14 / 23</a></li>
+      <li><a href="#ser">2:1 并串定帧</a></li>
+      <li><a href="#evidence">04 · 证据</a></li>
+      <li><a href="#tb">六层验证</a></li>
+      <li><a href="#resource">资源与时序</a></li>
+      <li><a href="#takeaways">记忆锚点</a></li>
+    </ol>
+    <div class="toc-foot">
+      <a href="showcase.html#s04">→ 看 s01–s04 上板波形</a>
+      <a href="s04.html">← 上一篇：s04 半带</a>
+      <a href="index.html">← 全部文章</a>
+    </div>
+  </aside>
+</div>
+
+<footer class="site-foot">
+  <div class="wrap">
+    <div class="foot-id">
+      <span class="foot-mark">FC</span>
+      <div>
+        <p><b>Fernando Cheung</b> · FPGA / 基带数据通路</p>
+        <p>个人技术笔记 · 教学演示与技术分享</p>
+      </div>
+    </div>
+    <div>
+      <p>数据来源：<code>fpga-lab</code> 的 <code>s05_duc/</code>、<code>s06_ddc/</code>、
+      <code>logs/s05_duc/</code>、<code>logs/s06_ddc/</code>、<code>docs/学习备忘.md</code> 第 17 节。</p>
+      <div class="foot-links">
+        <a href="index.html">文章列表</a>
+        <a href="s04.html">上一篇 s04</a>
+        <a href="showcase.html">上板波形</a>
+      </div>
+    </div>
+  </div>
+</footer>
+
+</body>
+</html>

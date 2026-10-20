@@ -4,7 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <meta name="color-scheme" content="dark">
-<meta name="description" content="FPGA 基带数据通路文章列表：s01 NCO、s02 复数混频、s03 FIR、s04 半带重采样四篇原理笔记，以及 s01–s04 的 ILA 上板波形与 CSV 对账。作者 Fernando Cheung。">
+<meta name="description" content="FPGA 基带数据通路文章列表：s01 NCO、s02 复数混频、s03 FIR、s04 半带重采样四篇原理笔记，s05+s06 DUC/DDC 集成回环，以及 s01–s04 的 ILA 上板波形与 CSV 对账。作者 Fernando Cheung。">
 <meta name="author" content="Fernando Cheung">
 <title>文章列表 · 从一只正弦到一条数据通路 | FPGA Showcase</title>
 <link rel="icon" href="assets/favicon.svg" type="image/svg+xml">
@@ -24,7 +24,8 @@
       <a href="s01.html">01 NCO</a>
       <a href="s02.html">02 混频</a>
       <a href="s03.html">03 FIR</a>
-      <a href="s04.html">04 重采样</a><span class="sep"></span>
+      <a href="s04.html">04 重采样</a>
+      <a href="s05.html">05+06 DUC/DDC</a><span class="sep"></span>
       <a href="showcase.html">上板波形</a>
     </nav>
   </div>
@@ -32,12 +33,12 @@
 
 <section class="home-hero">
   <div class="wrap">
-    <p class="eyebrow">FPGA SHOWCASE · s01–s04 · 2026.10</p>
-    <h1>把一条数据通路，<br><em>拆成五篇文章。</em></h1>
-    <p class="lede">这不是一份教程目录，而是一条 5G 基带链路的复健记录。四篇原理笔记分别讲 NCO、复数混频、FIR 和半带重采样，每篇都分成<strong>通信原理</strong>与<strong>FPGA 实现</strong>两半；另有一篇把 s01–s04 的真实 ILA 波形和五份 CSV 逐点对账，回答“板子上到底跑成了什么样”。</p>
+    <p class="eyebrow">FPGA SHOWCASE · s01–s06 · 2026.10</p>
+    <h1>把一条数据通路，<br><em>拆成六篇文章。</em></h1>
+    <p class="lede">这不是一份教程目录，而是一条 5G 基带链路的复健记录。四篇原理笔记分别讲 NCO、复数混频、FIR 和半带重采样；第五篇把四个零件接成 DUC → DDC 回环，回答“接起来以后还对不对”。每篇都分成<strong>原理</strong>与<strong>FPGA 实现</strong>两半；另有一篇把 s01–s04 的真实 ILA 波形和五份 CSV 逐点对账。</p>
     <div class="meta">
-      <span class="chip"><span class="dot"></span><b>4</b> 个独立验证的 stage</span>
-      <span class="chip"><b>6</b> 张 ILA · <b>5</b> 份 CSV</span>
+      <span class="chip"><span class="dot"></span><b>6</b> 个独立验证的 stage</span>
+      <span class="chip"><b>8</b> 张 ILA · <b>7</b> 份 CSV</span>
       <span class="chip">XC7A100T · <b>50 MHz</b></span>
       <span class="chip">仿真 + 上板 + ILA <b>三闭环</b></span>
     </div>
@@ -93,13 +94,23 @@
 
   <div class="section-head">
     <div>
-      <p class="eyebrow" style="margin:0 0 8px">THEORY NOTES · 四篇原理</p>
+      <p class="eyebrow" style="margin:0 0 8px">NOTES · 原理与集成</p>
       <h2>每个零件，先讲原理，再讲怎么落到 FPGA</h2>
     </div>
     <p>按 stage 倒序排列 · 第一次读建议从 s01 开始</p>
   </div>
 
   <div class="post-list">
+    <a class="post" href="s05.html">
+      <div class="post-top"><span class="post-no">05</span><span class="post-tag">S05+S06 · 集成 · 上板</span></div>
+      <h3>DUC → DDC：把四个零件接成一条回环</h3>
+      <p>成型、搬频、插值、抽取，四个零件各自都对，接起来仍会“频率对、相位错”。这一篇讲位宽链、LO_DLY 的 14/23、2:1 并串的定帧，以及板上 3 MHz → 500 kHz 的 6:1 证据。</p>
+      <div class="post-foot">
+        <span class="keys"><b>76+152</b> DSP · <b>6:1</b> · <b>90.00°</b></span>
+        <span class="arrow">→</span>
+      </div>
+    </a>
+
     <a class="post" href="s04.html">
       <div class="post-top"><span class="post-no">04</span><span class="post-tag">通信原理 · FPGA 实现</span></div>
       <h3>半带重采样：61 个抽头，15 个乘法器</h3>
@@ -153,15 +164,17 @@
       <span class="path-arrow">→</span>
       <a class="path-node" href="s04.html"><span class="step">STAGE 04</span><b>半带重采样</b><small>换采样率</small></a>
       <span class="path-arrow">→</span>
+      <a class="path-node" href="s05.html"><span class="step">STAGE 05+06</span><b>DUC / DDC</b><small>接成回环</small></a>
+      <span class="path-arrow">→</span>
       <a class="path-node" href="showcase.html"><span class="step">BOARD</span><b>上板波形</b><small>ILA + CSV 对账</small></a>
     </div>
   </section>
 
   <div class="stat-row">
-    <div class="stat"><b>4</b><span>独立验证的 stage</span></div>
-    <div class="stat"><b>15</b><span>半带乘法器 / 方向</span></div>
-    <div class="stat"><b>1991</b><span>级联冲激响应峰值</span></div>
-    <div class="stat"><b>30 <small>DSP</small></b><span>插值 + 抽取两个方向</span></div>
+    <div class="stat"><b>6</b><span>独立验证的 stage</span></div>
+    <div class="stat"><b>538</b><span>全仓库检查点</span></div>
+    <div class="stat"><b>152 <small>DSP</small></b><span>DUC + DDC 回环</span></div>
+    <div class="stat"><b>6:1</b><span>3 MHz → 500 kHz</span></div>
   </div>
 
 </main>
@@ -183,6 +196,7 @@
         <a href="s02.html">s02 混频</a>
         <a href="s03.html">s03 FIR</a>
         <a href="s04.html">s04 重采样</a>
+        <a href="s05.html">s05+s06 DUC/DDC</a>
       </div>
     </div>
   </div>
